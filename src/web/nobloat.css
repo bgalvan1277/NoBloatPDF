@@ -1,0 +1,204 @@
+/* No Bloat PDF brand skin over the stock pdf.js viewer.
+   Primary #1800ad (indigo), secondary #80b4f6 (light blue).
+   The main toolbar carries the brand in both light and dark themes; the
+   floating panels (findbar, secondary toolbar) keep the stock neutral look,
+   so their variables are reset below the #toolbarViewer overrides. */
+
+:root {
+  --nb-primary: #1800ad;
+  --nb-primary-dark: #10007a;
+  --nb-secondary: #80b4f6;
+
+  --toolbar-bg-color: var(--nb-primary);
+  --toolbar-border-color: var(--nb-primary-dark);
+  --progressBar-color: var(--nb-secondary);
+  --progressBar-bg-color: rgb(128 180 246 / 0.25);
+  --button-primary-bg-color: light-dark(var(--nb-primary), var(--nb-secondary));
+}
+
+#toolbarViewer {
+  --main-color: #fff;
+  --toolbar-icon-bg-color: #fff;
+  --toolbar-icon-hover-bg-color: #fff;
+  --field-color: #fff;
+  --field-bg-color: rgb(255 255 255 / 0.14);
+  --field-border-color: rgb(255 255 255 / 0.3);
+  --button-hover-color: rgb(255 255 255 / 0.2);
+  --toggled-btn-color: #fff;
+  --toggled-btn-bg-color: rgb(128 180 246 / 0.45);
+  --toggled-hover-active-btn-color: rgb(128 180 246 / 0.6);
+  --dropdown-btn-bg-color: rgb(255 255 255 / 0.14);
+}
+
+/* Floating panels live inside #toolbarViewer in the DOM — give them back the
+   stock values so the brand bar doesn't bleed into them. #findbar paints its
+   own background from --toolbar-bg-color (viewer.css), so the toolbar bg/border
+   vars must be reset here too, not just the text vars. */
+#findbar,
+#secondaryToolbar,
+#toolbarViewer :is(.doorHanger, .doorHangerRight, .editorParamsToolbar, .menu) {
+  --toolbar-bg-color: light-dark(rgb(249 249 250), rgb(56 56 61));
+  --toolbar-border-color: light-dark(rgb(184 184 184), rgb(12 12 13));
+  --toolbar-icon-bg-color: light-dark(rgb(0 0 0), rgb(255 255 255));
+  --main-color: light-dark(rgb(12 12 13), rgb(249 249 250));
+  --toolbar-icon-bg-color: light-dark(rgb(0 0 0), rgb(255 255 255));
+  --toolbar-icon-hover-bg-color: light-dark(rgb(0 0 0), rgb(255 255 255));
+  --field-color: light-dark(rgb(6 6 6), rgb(250 250 250));
+  --field-bg-color: light-dark(rgb(255 255 255), rgb(64 64 68));
+  --field-border-color: light-dark(rgb(187 187 188), rgb(115 115 115));
+  --button-hover-color: color-mix(in srgb, currentColor 17%, transparent);
+  --toggled-btn-color: light-dark(rgb(0 0 0), rgb(255 255 255));
+  --toggled-btn-bg-color: rgb(0 0 0 / 0.3);
+  --toggled-hover-active-btn-color: rgb(0 0 0 / 0.4);
+  --dropdown-btn-bg-color: light-dark(rgb(215 215 219), rgb(74 74 79));
+}
+
+/* --- Tab bar -------------------------------------------------------------
+   body becomes a flex column: tab strip on top, #outerContainer fills the
+   rest (its own height:100% is overridden by flex sizing). */
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#outerContainer {
+  height: auto;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+#nobloatTabBar {
+  flex: 0 0 36px;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 6px 0;
+  background: var(--nb-primary-dark);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* Printing: pdf.js paginates block children of #printContainer (a direct
+   body child). Restore block layout so fragmentation never has to run
+   through a flex container — Chromium's weak spot. */
+body[data-pdfjsprinting] {
+  display: block;
+}
+
+@media print {
+  body {
+    display: block;
+  }
+
+  #nobloatTabBar {
+    display: none;
+  }
+}
+
+.nb-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 110px;
+  max-width: 220px;
+  padding: 0 6px 0 12px;
+  border-radius: 6px 6px 0 0;
+  color: rgb(255 255 255 / 0.75);
+  background: transparent;
+  font: 12px system-ui, sans-serif;
+  cursor: default;
+  user-select: none;
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+
+.nb-tab:hover {
+  background: rgb(255 255 255 / 0.08);
+}
+
+.nb-tab.nb-active {
+  /* Matches the toolbar below so the active tab reads as attached to it. */
+  background: var(--nb-primary);
+  color: #fff;
+}
+
+.nb-tab-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nb-tab-close {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 4px;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  font-size: 14px;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.nb-tab-close:hover {
+  background: rgb(255 255 255 / 0.25);
+}
+
+.nb-tab-add {
+  flex: 0 0 auto;
+  align-self: center;
+  border: 0;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  margin-inline-start: 4px;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  background: transparent;
+  color: rgb(255 255 255 / 0.75);
+  cursor: pointer;
+}
+
+.nb-tab-add:hover {
+  background: rgb(255 255 255 / 0.15);
+  color: #fff;
+}
+
+/* Branded empty state, injected by nobloat.js; hidden once a document opens.
+   pointer-events: none keeps drag-and-drop and clicks working through it. */
+#nobloatEmptyState {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  pointer-events: none;
+  z-index: 1;
+  color: var(--main-color);
+}
+
+#nobloatEmptyState.hidden {
+  display: none;
+}
+
+#nobloatEmptyState img {
+  width: 96px;
+  height: 96px;
+  opacity: 0.9;
+}
+
+#nobloatEmptyState .nb-title {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+#nobloatEmptyState .nb-hint {
+  font-size: 13px;
+  opacity: 0.7;
+}
