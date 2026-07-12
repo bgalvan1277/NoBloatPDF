@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>About No Bloat PDF</title>
+    <link rel="stylesheet" href="about.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="glow glow-a"></div>
+      <div class="glow glow-b"></div>
+      <img src="brand/logo.png" alt="No Bloat — Simple Lightweight PDF Viewer" class="wordmark" />
+      <div class="pills">
+        <span class="pill">Version <span id="version">0.1.0</span></span>
+        <span class="pill pill-accent">Free · No tracking · No accounts</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="card">
+        <div class="label">Why this exists</div>
+        <p>
+          I built No Bloat PDF for a simple reason: I grew to hate opening
+          Adobe PDFs. The most common file on a computer had somehow ended up
+          behind slow launchers, ads, cloud upsells, and sign-in prompts. And
+          everyone I talked to (in every kind of role, working day to day) was
+          quietly putting up with the same thing.
+        </p>
+        <p>
+          So I built the viewer I wanted: it opens instantly, stays out of your
+          way, and never phones home. And I'm giving it away, because so many
+          people deal with the same problems. No agenda. Nothing to sell.
+        </p>
+      </section>
+
+      <section class="card author">
+        <img src="brand/brian.png" alt="Brian Galvan" class="avatar" />
+        <div class="author-info">
+          <div class="name">Brian Galvan</div>
+          <div class="tagline">Lifelong developer &amp; Martech provider</div>
+          <div class="chips">
+            <span class="chip">Director of Growth &amp; Innovation · Barnes Walker</span>
+            <span class="chip">CTO &amp; Co-founder · Virtual Hangar</span>
+            <span class="chip">Owner · YourLegal.app</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <a id="siteLink" class="cta" href="https://www.nobloatpdf.com">
+          Visit NoBloatPDF.com
+          <span class="cta-sub">updates &amp; new versions</span>
+        </a>
+        <a id="coffeeLink" class="coffee" href="https://buymeacoffee.com/briangalvan" title="Buy me a coffee">
+          <img src="brand/buycoffee.png" alt="Buy me a coffee" />
+        </a>
+      </div>
+
+      <details class="card licenses">
+        <summary>Licenses &amp; attribution</summary>
+        <p class="credits">
+          Rendering by <strong>Mozilla pdf.js</strong> (Apache License 2.0) ·
+          App shell by <strong>Tauri</strong> (MIT / Apache License 2.0)
+        </p>
+        <pre id="licenseText">Loading…</pre>
+      </details>
+
+      <footer>© 2026 Brian Galvan</footer>
+    </main>
+    <script src="about.js"></script>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# macOS signing material: private key and bundles must NEVER be committed
+src-tauri/signing/macos/*.key
+src-tauri/signing/macos/*.p12
+src-tauri/signing/macos/*.cer
+src-tauri/signing/macos/*.pem
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
