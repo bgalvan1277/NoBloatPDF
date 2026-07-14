@@ -1,3 +1,17 @@
+// nobloat worker polyfills — keep in sync with web/polyfills.js (workers
+// don't see main-thread polyfills). WebKit 16.4–17.x lacks both APIs.
+if (!Promise.withResolvers) {
+  Promise.withResolvers = function () {
+    let resolve, reject;
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+}
+if (!URL.parse) {
+  URL.parse = function (url, base) {
+    try { return new URL(url, base); } catch { return null; }
+  };
+}
 /**
  * @licstart The following is the entire license notice for the
  * JavaScript code in this page
