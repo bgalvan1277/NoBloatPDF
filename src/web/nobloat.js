@@ -9,6 +9,74 @@
 
 const { core, event: tauriEvent, webview, window: tauriWindow } = window.__TAURI__;
 
+const isMac = navigator.platform.startsWith('Mac');
+
+// Menu/tooltip shortcut text only — key handlers already accept Ctrl and Cmd.
+function shortcutLabel(win) {
+  if (!isMac) return win;
+  return win.replace(/Ctrl\+Shift\+/g, '⇧⌘').replace(/Ctrl\+/g, '⌘');
+}
+
+// WKWebView tracks the OS's Safari, and anything below Safari 17.5 drops every
+// declaration using CSS light-dark() — viewer.css and nobloat.css lean on it
+// for nearly all colors, so menus render transparent and toolbar icons
+// invisible. When the engine lacks support, refetch each stylesheet, resolve
+// light-dark(a, b) to the active scheme's value, and append the resolved copy
+// right after its <link> (same specificity, later position → it wins, and the
+// viewer.css → nobloat.css cascade order is preserved).
+(function shimLightDark() {
+  let supported = false;
+  try {
+    supported = CSS.supports('color', 'light-dark(#000, #fff)');
+  } catch {
+    // CSS.supports itself missing → certainly needs the shim
+  }
+  if (supported) return;
+
+  const resolve = (css, dark) => {
+    const fn = 'light-dark(';
+    let i;
+    while ((i = css.indexOf(fn)) !== -1) {
+      let depth = 1;
+      let comma = -1;
+      let j = i + fn.length;
+      for (; j < css.length && depth > 0; j++) {
+        const ch = css[j];
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        else if (ch === ',' && depth === 1 && comma === -1) comma = j;
+      }
+      if (comma === -1 || depth > 0) break; // malformed; don't loop forever
+      const value = dark ? css.slice(comma + 1, j - 1) : css.slice(i + fn.length, comma);
+      css = css.slice(0, i) + value.trim() + css.slice(j);
+    }
+    return css;
+  };
+
+  const darkMq = window.matchMedia('(prefers-color-scheme: dark)');
+  const copies = []; // { source, styleEl }
+
+  // Module scripts run after the document is parsed, so the <link>s exist.
+  for (const link of document.querySelectorAll('link[rel="stylesheet"]')) {
+    fetch(link.href)
+      .then((r) => r.text())
+      .then((source) => {
+        if (!source.includes('light-dark(')) return;
+        const styleEl = document.createElement('style');
+        styleEl.textContent = resolve(source, darkMq.matches);
+        link.after(styleEl);
+        copies.push({ source, styleEl });
+      })
+      .catch(() => {});
+  }
+
+  darkMq.addEventListener('change', () => {
+    for (const { source, styleEl } of copies) {
+      styleEl.textContent = resolve(source, darkMq.matches);
+    }
+  });
+})();
+
 document.addEventListener('webviewerloaded', () => {
   const opts = window.PDFViewerApplicationOptions;
   opts.set('defaultUrl', ''); // never load the bundled Mozilla demo document
@@ -576,21 +644,26 @@ const TOOLS_MENU = [
 function fileMenuItems() {
   const hasDoc = !!activeTab();
   return [
-    { label: 'Open…', shortcut: 'Ctrl+O', action: pickAndOpen },
+    { label: 'Open…', shortcut: shortcutLabel('Ctrl+O'), action: pickAndOpen },
     { type: 'separator' },
-    { label: 'Save', shortcut: 'Ctrl+S', enabled: hasDoc, action: saveActiveTab },
-    { label: 'Save As…', shortcut: 'Ctrl+Shift+S', enabled: hasDoc, action: saveActiveTabAs },
+    { label: 'Save', shortcut: shortcutLabel('Ctrl+S'), enabled: hasDoc, action: saveActiveTab },
+    {
+      label: 'Save As…',
+      shortcut: shortcutLabel('Ctrl+Shift+S'),
+      enabled: hasDoc,
+      action: saveActiveTabAs,
+    },
     { type: 'separator' },
     {
       label: 'Print…',
-      shortcut: 'Ctrl+P',
+      shortcut: shortcutLabel('Ctrl+P'),
       enabled: hasDoc,
       action: () => document.getElementById('printButton')?.click(),
     },
     { type: 'separator' },
     {
       label: 'Close Tab',
-      shortcut: 'Ctrl+W',
+      shortcut: shortcutLabel('Ctrl+W'),
       enabled: hasDoc,
       action: () => activeTabId !== null && closeTab(activeTabId),
     },
@@ -924,7 +997,7 @@ function renderTabBar() {
   add.className = 'nb-tab-add';
   add.type = 'button';
   add.textContent = '+';
-  add.title = 'Open PDF (Ctrl+O)';
+  add.title = `Open PDF (${shortcutLabel('Ctrl+O')})`;
   add.setAttribute('aria-label', 'Open PDF');
   add.addEventListener('click', pickAndOpen);
   bar.append(add);
@@ -964,7 +1037,7 @@ window.addEventListener('DOMContentLoaded', () => {
     title.textContent = 'No Bloat PDF';
     const hint = document.createElement('div');
     hint.className = 'nb-hint';
-    hint.textContent = 'Drop a PDF here, or press Ctrl+O to open';
+    hint.textContent = `Drop a PDF here, or press ${shortcutLabel('Ctrl+O')} to open`;
     empty.append(img, title, hint);
     mainContainer.append(empty);
   }
