@@ -181,8 +181,8 @@ pdfjs-printing-not-ready = Warning: The PDF is not fully loaded for printing.
 ## Tooltips and alt text for side panel toolbar buttons
 
 pdfjs-current-outline-item-button =
-    .title = Find Current Outline Item
-pdfjs-current-outline-item-button-label = Current Outline Item
+    .title = Find Current Bookmark
+pdfjs-current-outline-item-button-label = Current Bookmark
 pdfjs-findbar-button =
     .title = Find in Document
 pdfjs-findbar-button-label = Find
@@ -705,14 +705,14 @@ pdfjs-views-manager-view-selector-button =
     .title = Views
 pdfjs-views-manager-view-selector-button-label = Views
 pdfjs-views-manager-pages-title = Pages
-pdfjs-views-manager-outlines-title1 = Document outline
-    .title = Document outline (double-click to expand/collapse all items)
+pdfjs-views-manager-outlines-title1 = Bookmarks
+    .title = Bookmarks (double-click to expand/collapse all items)
 pdfjs-views-manager-attachments-title = Attachments
 pdfjs-views-manager-layers-title1 = Layers
     .title = Layers (double-click to reset all layers to the default state)
 
 pdfjs-views-manager-pages-option-label = Pages
-pdfjs-views-manager-outlines-option-label = Document outline
+pdfjs-views-manager-outlines-option-label = Bookmarks
 pdfjs-views-manager-attachments-option-label = Attachments
 pdfjs-views-manager-layers-option-label = Layers
 
