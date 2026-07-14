@@ -64,26 +64,6 @@ fn save_pdf(request: tauri::ipc::Request<'_>) -> Result<(), String> {
     })
 }
 
-// async: creating a webview window inside a synchronous command deadlocks
-// the webview initialization on Windows (wry re-entrancy) — the shell
-// appears but stays blank and unresponsive.
-#[tauri::command]
-async fn show_about(app: tauri::AppHandle) {
-    if let Some(win) = app.get_webview_window("about") {
-        let _ = win.set_focus();
-        return;
-    }
-    let _ = tauri::WebviewWindowBuilder::new(
-        &app,
-        "about",
-        tauri::WebviewUrl::App("about.html".into()),
-    )
-    .title("About No Bloat PDF")
-    .inner_size(500.0, 720.0)
-    .resizable(false)
-    .build();
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -102,7 +82,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(PendingFiles(Mutex::new(paths_from_args(std::env::args()))))
-        .invoke_handler(tauri::generate_handler![pending_files, show_about, save_pdf])
+        .invoke_handler(tauri::generate_handler![pending_files, save_pdf])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {

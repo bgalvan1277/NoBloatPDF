@@ -466,10 +466,15 @@ function showToast(text) {
 
 window.nobloatSaveFile = async function (data, suggestedName) {
   const tab = activeTab();
-  const target = await window.__TAURI__.dialog.save({
-    defaultPath: tab?.path ?? suggestedName ?? 'document.pdf',
-    filters: [{ name: 'PDF', extensions: ['pdf'] }],
-  });
+  // File > Save presets the tab's own path; everything else asks where to save.
+  const preset = directSaveTarget;
+  directSaveTarget = null;
+  const target =
+    preset ??
+    (await window.__TAURI__.dialog.save({
+      defaultPath: tab?.path ?? suggestedName ?? 'document.pdf',
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    }));
   if (!target) return false; // user cancelled the dialog
   const sameFile = tab && normPath(target) === normPath(tab.path);
   try {
@@ -509,6 +514,375 @@ window.nobloatSaveFile = async function (data, suggestedName) {
   }
   return true;
 };
+
+// ---------------------------------------------------------------------------
+// Menu bar (File / Tools / About)
+//
+// Classic menu strip above the tab bar. Item lists are rebuilt every time a
+// menu opens so enabled/checked states are always current. The Tools menu
+// mirrors the viewer's secondary (») toolbar: each entry proxies a click to
+// the corresponding pdf.js button, so behavior, localized labels, and radio
+// states stay in lockstep with the viewer's own controls.
+
+let appVersion = '';
+
+// File > Save: when set, nobloatSaveFile writes here instead of asking where
+// to save. Consumed (and cleared) by the first save that follows.
+let directSaveTarget = null;
+
+function dispatchDownload() {
+  window.PDFViewerApplication?.eventBus?.dispatch('download', { source: 'nobloatMenu' });
+}
+
+function saveActiveTab() {
+  const tab = activeTab();
+  if (!tab) return;
+  directSaveTarget = tab.path;
+  dispatchDownload();
+}
+
+function saveActiveTabAs() {
+  if (!activeTab()) return;
+  directSaveTarget = null;
+  dispatchDownload();
+}
+
+// [buttonId, English fallback]; null = separator. Labels are read from the
+// live (l10n-filled) buttons at open time, so they match the app language.
+const TOOLS_MENU = [
+  ['presentationMode', 'Presentation Mode'],
+  null,
+  ['firstPage', 'Go to First Page'],
+  ['lastPage', 'Go to Last Page'],
+  null,
+  ['pageRotateCw', 'Rotate Clockwise'],
+  ['pageRotateCcw', 'Rotate Counterclockwise'],
+  null,
+  ['cursorSelectTool', 'Text Selection Tool'],
+  ['cursorHandTool', 'Hand Tool'],
+  null,
+  ['scrollPage', 'Page Scrolling'],
+  ['scrollVertical', 'Vertical Scrolling'],
+  ['scrollHorizontal', 'Horizontal Scrolling'],
+  ['scrollWrapped', 'Wrapped Scrolling'],
+  null,
+  ['spreadNone', 'No Spreads'],
+  ['spreadOdd', 'Odd Spreads'],
+  ['spreadEven', 'Even Spreads'],
+  null,
+  ['documentProperties', 'Document Properties…'],
+];
+
+function fileMenuItems() {
+  const hasDoc = !!activeTab();
+  return [
+    { label: 'Open…', shortcut: 'Ctrl+O', action: pickAndOpen },
+    { type: 'separator' },
+    { label: 'Save', shortcut: 'Ctrl+S', enabled: hasDoc, action: saveActiveTab },
+    { label: 'Save As…', shortcut: 'Ctrl+Shift+S', enabled: hasDoc, action: saveActiveTabAs },
+    { type: 'separator' },
+    {
+      label: 'Print…',
+      shortcut: 'Ctrl+P',
+      enabled: hasDoc,
+      action: () => document.getElementById('printButton')?.click(),
+    },
+    { type: 'separator' },
+    {
+      label: 'Close Tab',
+      shortcut: 'Ctrl+W',
+      enabled: hasDoc,
+      action: () => activeTabId !== null && closeTab(activeTabId),
+    },
+    // close() runs the same unsaved-changes confirm as the window's X button.
+    { label: 'Exit', action: () => tauriWindow.getCurrentWindow().close().catch(() => {}) },
+  ];
+}
+
+function toolsMenuItems() {
+  const hasDoc = !!window.PDFViewerApplication?.pdfDocument;
+  return TOOLS_MENU.map((entry) => {
+    if (!entry) return { type: 'separator' };
+    const [id, fallback] = entry;
+    const btn = document.getElementById(id);
+    return {
+      label: btn?.querySelector('span')?.textContent?.trim() || fallback,
+      enabled: hasDoc && !!btn,
+      checked: btn?.classList.contains('toggled') ?? false,
+      action: () => btn?.click(),
+    };
+  });
+}
+
+function aboutMenuItems() {
+  const openUrl = (url) => window.__TAURI__.opener.openUrl(url).catch(() => {});
+  return [
+    { label: 'About No Bloat PDF', action: showAboutDialog },
+    { label: 'Special Thanks', action: showThanksDialog },
+    { label: appVersion ? `Version ${appVersion}` : 'Version', enabled: false },
+    { type: 'separator' },
+    {
+      label: 'Check for Updates…',
+      action: () => openUrl('https://www.nobloatpdf.com/download.html'),
+    },
+    { type: 'separator' },
+    { label: 'License Information', action: showLicenseDialog },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// About / Special Thanks / License modals
+//
+// All three live as centered <dialog>s inside the viewer window (the old
+// separate About webview window is gone). Native <dialog> gives centering,
+// Esc, and the dimmed backdrop for free; every modal also closes on a
+// backdrop click because its padding lives on an inner box, so a click that
+// lands on the dialog element itself can only be outside that box.
+
+function createModal(id) {
+  const dialog = document.createElement('dialog');
+  dialog.id = id;
+  dialog.className = 'nb-modal';
+  dialog.addEventListener('click', (ev) => {
+    if (ev.target === dialog) dialog.close();
+  });
+  document.body.append(dialog);
+  return dialog;
+}
+
+// The static content below is our own trusted markup (no user input).
+let aboutDialog = null;
+
+function showAboutDialog() {
+  if (!aboutDialog) {
+    aboutDialog = createModal('nbAboutDialog');
+    aboutDialog.innerHTML = `
+      <div class="nb-about-box">
+        <header class="nb-about-hero">
+          <img class="nb-about-wordmark" src="../brand/logo.png" alt="No Bloat — Simple Lightweight PDF Viewer" />
+          <div class="nb-about-pills">
+            <span class="nb-pill">Version <span id="nbAboutVersion"></span></span>
+            <span class="nb-pill nb-pill-accent">Free · No tracking · No accounts</span>
+          </div>
+          <button type="button" class="nb-modal-x" aria-label="Close">×</button>
+        </header>
+        <div class="nb-about-body">
+          <section class="nb-about-card">
+            <div class="nb-about-label">Why this exists</div>
+            <p>
+              I built No Bloat PDF for a simple reason: I grew to hate opening
+              Adobe PDFs. The most common file on a computer had somehow ended
+              up behind slow launchers, ads, cloud upsells, and sign-in
+              prompts. And everyone I talked to (in every kind of role,
+              working day to day) was quietly putting up with the same thing.
+            </p>
+            <p>
+              So I built the viewer I wanted: it opens instantly, stays out of
+              your way, and never phones home. And I'm giving it away, because
+              so many people deal with the same problems. No agenda. Nothing
+              to sell.
+            </p>
+          </section>
+          <section class="nb-about-card nb-about-author">
+            <img class="nb-about-avatar" src="../brand/brian.png" alt="Brian Galvan" />
+            <div>
+              <div class="nb-about-name">Brian Galvan</div>
+              <div class="nb-about-tagline">Lifelong developer &amp; Martech provider</div>
+              <div class="nb-about-chips">
+                <span class="nb-chip">Director of Growth &amp; Innovation · Barnes Walker</span>
+                <span class="nb-chip">CTO &amp; Co-founder · Virtual Hangar</span>
+                <span class="nb-chip">Owner · YourLegal.app</span>
+              </div>
+            </div>
+          </section>
+          <div class="nb-about-actions">
+            <a href="#" id="nbAboutSite" class="nb-about-cta">Visit NoBloatPDF.com<span>updates &amp; new versions</span></a>
+            <a href="#" id="nbAboutCoffee" class="nb-about-coffee" title="Buy me a coffee"><img src="../brand/buycoffee.png" alt="Buy me a coffee" /></a>
+          </div>
+          <footer>© 2026 Brian Galvan</footer>
+        </div>
+      </div>`;
+    aboutDialog.querySelector('.nb-modal-x').addEventListener('click', () => aboutDialog.close());
+    // External links must open in the system browser, never navigate the app.
+    for (const [id, url] of [
+      ['nbAboutSite', 'https://www.nobloatpdf.com'],
+      ['nbAboutCoffee', 'https://buymeacoffee.com/briangalvan'],
+    ]) {
+      aboutDialog.querySelector(`#${id}`).addEventListener('click', (ev) => {
+        ev.preventDefault();
+        window.__TAURI__.opener.openUrl(url).catch(() => {});
+      });
+    }
+  }
+  aboutDialog.querySelector('#nbAboutVersion').textContent = appVersion || '';
+  aboutDialog.showModal();
+}
+
+let thanksDialog = null;
+
+function showThanksDialog() {
+  if (!thanksDialog) {
+    thanksDialog = createModal('nbThanksDialog');
+    thanksDialog.innerHTML = `
+      <div class="nb-thanks-box">
+        <h2>Special Thanks</h2>
+        <p>
+          Thanks to the community of testers who gave me feedback over the
+          first six months of building this. Special thanks to Tori Leidke and
+          the attorneys at Barnes Walker Law Firm, whose insight helped me
+          shape the final rounds into something solid.
+        </p>
+        <p>
+          Our years long fight with Adobe, the daily slowdowns, the friction
+          that quietly made everything harder, finally comes to an end. And it
+          ends the way the best products do: through a community of volunteers
+          who care about building simple tools that just work.
+        </p>
+        <div class="nb-modal-footer"><button type="button">Close</button></div>
+      </div>`;
+    thanksDialog.querySelector('.nb-modal-footer button').addEventListener('click', () => thanksDialog.close());
+  }
+  thanksDialog.showModal();
+}
+
+// License modal: the full pdf.js license text, big enough to actually read.
+let licenseDialog = null;
+
+function showLicenseDialog() {
+  if (!licenseDialog) {
+    licenseDialog = createModal('nbLicenseDialog');
+    const box = document.createElement('div');
+    box.className = 'nb-license-box';
+    const title = document.createElement('h2');
+    title.textContent = 'Licenses & attribution';
+    const credits = document.createElement('p');
+    credits.className = 'nb-license-credits';
+    credits.textContent =
+      'Rendering by Mozilla pdf.js (Apache License 2.0) · App shell by Tauri (MIT / Apache License 2.0)';
+    const pre = document.createElement('pre');
+    pre.className = 'nb-license-text';
+    pre.textContent = 'Loading…';
+    fetch('../LICENSE.pdfjs.txt')
+      .then((r) => r.text())
+      .then((t) => (pre.textContent = t))
+      .catch(() => (pre.textContent = 'See LICENSE.pdfjs.txt in the application folder.'));
+    const footer = document.createElement('div');
+    footer.className = 'nb-modal-footer';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.addEventListener('click', () => licenseDialog.close());
+    footer.append(close);
+    box.append(title, credits, pre, footer);
+    licenseDialog.append(box);
+  }
+  licenseDialog.showModal();
+}
+
+function buildMenuBar() {
+  const defs = [
+    { name: 'File', items: fileMenuItems },
+    { name: 'Tools', items: toolsMenuItems },
+    { name: 'About', items: aboutMenuItems },
+  ];
+  const bar = document.createElement('div');
+  bar.id = 'nobloatMenuBar';
+  bar.setAttribute('role', 'menubar');
+  let open = null; // { wrapper, btn, popup }
+
+  const close = () => {
+    if (!open) return;
+    open.popup.remove();
+    open.wrapper.classList.remove('nb-open');
+    open.btn.setAttribute('aria-expanded', 'false');
+    open = null;
+  };
+
+  const openFor = (def, wrapper, btn) => {
+    close();
+    const popup = document.createElement('div');
+    popup.className = 'nb-menu-popup';
+    popup.setAttribute('role', 'menu');
+    for (const item of def.items()) {
+      if (item.type === 'separator') {
+        const sep = document.createElement('div');
+        sep.className = 'nb-menu-sep';
+        popup.append(sep);
+        continue;
+      }
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'nb-menu-item';
+      row.setAttribute('role', 'menuitem');
+      row.disabled = item.enabled === false;
+      const check = document.createElement('span');
+      check.className = 'nb-menu-check';
+      check.textContent = item.checked ? '✓' : '';
+      const label = document.createElement('span');
+      label.className = 'nb-menu-label';
+      label.textContent = item.label;
+      row.append(check, label);
+      if (item.shortcut) {
+        const shortcut = document.createElement('span');
+        shortcut.className = 'nb-menu-shortcut';
+        shortcut.textContent = item.shortcut;
+        row.append(shortcut);
+      }
+      row.addEventListener('click', () => {
+        close();
+        item.action?.();
+      });
+      popup.append(row);
+    }
+    wrapper.append(popup);
+    wrapper.classList.add('nb-open');
+    btn.setAttribute('aria-expanded', 'true');
+    open = { wrapper, btn, popup };
+  };
+
+  for (const def of defs) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'nb-menu';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'nb-menu-btn';
+    btn.textContent = def.name;
+    btn.setAttribute('aria-haspopup', 'true');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.addEventListener('click', () => {
+      if (open?.wrapper === wrapper) close();
+      else openFor(def, wrapper, btn);
+    });
+    // Classic menubar behavior: once a menu is open, hovering a sibling
+    // switches to it.
+    btn.addEventListener('pointerenter', () => {
+      if (open && open.wrapper !== wrapper) openFor(def, wrapper, btn);
+    });
+    wrapper.append(btn);
+    bar.append(wrapper);
+  }
+
+  document.addEventListener(
+    'pointerdown',
+    (ev) => {
+      if (open && !bar.contains(ev.target)) close();
+    },
+    { capture: true }
+  );
+  window.addEventListener(
+    'keydown',
+    (ev) => {
+      if (ev.key === 'Escape' && open) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        close();
+      }
+    },
+    { capture: true }
+  );
+
+  return bar;
+}
 
 // ---------------------------------------------------------------------------
 // Tab bar UI
@@ -560,11 +934,21 @@ function renderTabBar() {
 // Wiring
 
 window.addEventListener('DOMContentLoaded', () => {
-  // Tab strip above the viewer chrome (body is turned into a flex column in
-  // nobloat.css; #outerContainer flexes to fill the rest).
+  // One header strip at the very top: menus on the left, tabs filling the
+  // rest of the row (body is turned into a flex column in nobloat.css;
+  // #outerContainer flexes to fill the rest).
+  const menuBar = buildMenuBar();
+  document.body.insertBefore(menuBar, document.body.firstChild);
+  window.__TAURI__.app
+    ?.getVersion()
+    .then((v) => {
+      appVersion = v;
+    })
+    .catch(() => {});
+
   const tabBar = document.createElement('div');
   tabBar.id = 'nobloatTabBar';
-  document.body.insertBefore(tabBar, document.getElementById('outerContainer'));
+  menuBar.append(tabBar);
 
   // Branded empty state until the first document opens; pointer-events: none
   // in nobloat.css keeps drops and clicks working through it.
@@ -585,10 +969,11 @@ window.addEventListener('DOMContentLoaded', () => {
     mainContainer.append(empty);
   }
 
-  // "Bookmarks" toolbar button, to the left of the download/save button:
-  // shows the bookmarks panel (adding happens in the panel, or via Ctrl+B).
-  const downloadBtn = document.getElementById('downloadButton');
-  if (downloadBtn) {
+  // "Bookmarks" toolbar button, leftmost of the right-side toolbar cluster
+  // (before the annotation tools): shows the bookmarks panel (adding happens
+  // in the panel, or via Ctrl+B).
+  const editorButtons = document.getElementById('editorModeButtons');
+  if (editorButtons) {
     const bmBtn = document.createElement('button');
     bmBtn.id = 'nobloatAddBookmark';
     bmBtn.className = 'toolbarButton';
@@ -602,7 +987,7 @@ window.addEventListener('DOMContentLoaded', () => {
     bmBtn.addEventListener('click', () => {
       window.PDFViewerApplication?.viewsManager?.switchView(SIDEBAR_VIEW_OUTLINE, true);
     });
-    downloadBtn.before(bmBtn);
+    editorButtons.before(bmBtn);
   }
 
   // Merge this tab's bookmarks into the outline view whenever pdf.js
@@ -643,19 +1028,6 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     });
   })();
-
-  // "About" entry at the bottom of the secondary (») toolbar menu.
-  const menu = document.getElementById('secondaryToolbarButtonContainer');
-  if (menu) {
-    const about = document.createElement('button');
-    about.className = 'secondaryToolbarButton';
-    about.type = 'button';
-    const label = document.createElement('span');
-    label.textContent = 'About No Bloat PDF';
-    about.append(label);
-    about.addEventListener('click', () => core.invoke('show_about').catch(() => {}));
-    menu.append(about);
-  }
 
   renderTabBar();
 
@@ -721,6 +1093,10 @@ window.addEventListener('DOMContentLoaded', () => {
         action = addBookmark;
       } else if (plainCtrl && ev.key.toLowerCase() === 'w') {
         action = () => activeTabId !== null && closeTab(activeTabId);
+      } else if (plainCtrl && ev.key.toLowerCase() === 's') {
+        action = saveActiveTab; // in-place save (File > Save), replaces pdf.js's dialog flow
+      } else if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 's') {
+        action = saveActiveTabAs;
       } else if (ev.ctrlKey && !ev.altKey && ev.key === 'Tab') {
         action = () => cycleTab(ev.shiftKey ? -1 : 1);
       }
