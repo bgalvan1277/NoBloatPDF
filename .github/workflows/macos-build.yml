@@ -49,3 +49,64 @@ jobs:
           name: NoBloatPDF-macos-${{ matrix.name }}
           path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
+
+  # Install the freshly built DMG on the (Apple Silicon) runner, launch the
+  # app with a generated PDF, and screenshot it — visual proof on current
+  # macOS for every build. Screenshot lands in the "smoke-test-screenshots"
+  # artifact.
+  smoke-test:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: NoBloatPDF-macos-apple-silicon
+          path: dmg
+
+      - name: Install app from dmg
+        run: |
+          sw_vers
+          hdiutil attach dmg/*.dmg -nobrowse -mountpoint /Volumes/nobloat
+          cp -R "/Volumes/nobloat/No Bloat PDF.app" /Applications/
+          hdiutil detach /Volumes/nobloat
+
+      - name: Generate test PDF
+        run: |
+          node -e '
+            const objs = [
+              "<< /Type /Catalog /Pages 2 0 R >>",
+              "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+              "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+              null, // content stream, built below
+              "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            ];
+            const text = "BT /F1 32 Tf 72 700 Td (No Bloat PDF smoke test) Tj ET";
+            objs[3] = `<< /Length ${text.length} >>\nstream\n${text}\nendstream`;
+            let pdf = "%PDF-1.4\n";
+            const offsets = [];
+            objs.forEach((body, i) => {
+              offsets.push(pdf.length);
+              pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+            });
+            const xref = pdf.length;
+            pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` +
+              offsets.map((o) => String(o).padStart(10, "0") + " 00000 n \n").join("") +
+              `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+            require("fs").writeFileSync("smoke-test.pdf", pdf);
+          '
+
+      - name: Launch app with PDF and screenshot
+        run: |
+          open -a "No Bloat PDF" "$PWD/smoke-test.pdf"
+          sleep 10
+          screencapture -x shot-10s.png
+          sleep 15
+          screencapture -x shot-25s.png
+          pgrep -x no-bloat-pdf || { echo "app not running"; exit 1; }
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-screenshots
+          path: shot-*.png
+          if-no-files-found: error
