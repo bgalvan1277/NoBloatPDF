@@ -15457,8 +15457,8 @@ class PDFDocumentProxy {
   getData() {
     return this._transport.getData();
   }
-  saveDocument() {
-    return this._transport.saveDocument();
+  saveDocument(options = null) {
+    return this._transport.saveDocument(options);
   }
   extractPages(pageInfos) {
     return this._transport.extractPages(pageInfos);
@@ -16510,8 +16510,10 @@ class WorkerTransport {
   getData() {
     return this.messageHandler.sendWithPromise("GetData", null);
   }
-  saveDocument() {
-    if (this.annotationStorage.size <= 0) {
+  saveDocument(options = null) {
+    const newOutline = Array.isArray(options?.newOutline) && options.newOutline.length > 0 ? options.newOutline : null;
+    const deleteOutline = Array.isArray(options?.deleteOutline) && options.deleteOutline.length > 0 ? options.deleteOutline : null;
+    if (this.annotationStorage.size <= 0 && !newOutline && !deleteOutline) {
       warn("saveDocument called while `annotationStorage` is empty, " + "please use the getData-method instead.");
     }
     const {
@@ -16522,6 +16524,8 @@ class WorkerTransport {
       isPureXfa: !!this._htmlForXfa,
       numPages: this._numPages,
       annotationStorage: map,
+      newOutline,
+      deleteOutline,
       filename: this.#fullReader?.filename ?? null
     }, transfer).finally(() => {
       this.annotationStorage.resetModified();

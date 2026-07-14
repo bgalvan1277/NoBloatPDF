@@ -18220,7 +18220,10 @@ class ViewsManager extends Sidebar {
       }
     };
     eventBus.on("outlineloaded", evt => {
-      onTreeLoaded(evt.outlineCount, this.outlineButton, SidebarView.OUTLINE);
+      this.outlineButton.disabled = false;
+      if (evt.outlineCount) {
+        this.#showUINotification();
+      }
       evt.currentOutlineItemPromise.then(enabled => {
         if (!this.isInitialViewSet) {
           return;
@@ -19048,7 +19051,11 @@ const PDFViewerApplication = {
     try {
       data = await (this.pdfDocument ? this.pdfDocument.getData() : this.pdfLoadingTask.getData());
     } catch {}
-    this.downloadManager.download(data, this._downloadUrl, this._docFilename);
+    if (window.nobloatSaveFile && data) {
+      await window.nobloatSaveFile(data, this._docFilename);
+    } else {
+      this.downloadManager.download(data, this._downloadUrl, this._docFilename);
+    }
   },
   async save() {
     if (!this.downloadManager) {
@@ -19060,8 +19067,18 @@ const PDFViewerApplication = {
     this._saveInProgress = true;
     await this.pdfScriptingManager.dispatchWillSave();
     try {
-      const data = await this.pdfDocument.saveDocument();
-      this.downloadManager.download(data, this._downloadUrl, this._docFilename);
+      const data = await this.pdfDocument.saveDocument(window.nobloatBookmarks?.saveOptions() ?? null);
+      let saved = true;
+      if (window.nobloatSaveFile) {
+        saved = await window.nobloatSaveFile(data, this._docFilename);
+      } else {
+        this.downloadManager.download(data, this._downloadUrl, this._docFilename);
+      }
+      if (saved) {
+        this.eventBus.dispatch("nobloatdocumentsaved", {
+          source: this
+        });
+      }
     } catch (reason) {
       console.error(`Error when saving the document:`, reason);
       await this.download();
@@ -19099,7 +19116,7 @@ const PDFViewerApplication = {
         data: this.pdfThumbnailViewer.getStructuralChanges()
       });
     } else {
-      await (this.pdfDocument?.annotationStorage.size > 0 ? this.save() : this.download());
+      await (this.pdfDocument?.annotationStorage.size > 0 || window.nobloatBookmarks?.saveOptions() ? this.save() : this.download());
     }
     delete this._mergedDocumentNeedsSaving;
     this.setTitle();

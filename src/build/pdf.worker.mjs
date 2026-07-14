@@ -64138,6 +64138,8 @@ class WorkerMessageHandler {
       isPureXfa,
       numPages,
       annotationStorage,
+      newOutline,
+      deleteOutline,
       filename
     }) {
       const globalPromises = [pdfManager.requestLoadedStream(), pdfManager.ensureCatalog("acroForm"), pdfManager.ensureCatalog("acroFormRef"), pdfManager.ensureDoc("startXRef"), pdfManager.ensureDoc("xref"), pdfManager.ensureCatalog("structTreeRoot")];
@@ -64207,6 +64209,211 @@ class WorkerMessageHandler {
         }
       }
       const refs = await Promise.all(promises);
+      const hasNewOutline = Array.isArray(newOutline) && newOutline.length > 0;
+      const hasDeleteOutline = Array.isArray(deleteOutline) && deleteOutline.length > 0;
+      if (!isPureXfa && (hasNewOutline || hasDeleteOutline) && catalogRef instanceof Ref) {
+        const catalog = xref.fetch(catalogRef);
+        if (catalog instanceof Dict) {
+          const touched = new Set();
+          const getClone = node => {
+            if (!node.clone) {
+              node.clone = node.dict.clone();
+              touched.add(node);
+            }
+            return node.clone;
+          };
+          const seenRefs = new RefSet();
+          const walkChildren = parent => {
+            let childRef = parent.dict.getRaw("First");
+            while (childRef instanceof Ref && !seenRefs.has(childRef)) {
+              seenRefs.put(childRef);
+              const childDict = xref.fetch(childRef);
+              if (!(childDict instanceof Dict)) {
+                break;
+              }
+              const childCount = childDict.get("Count");
+              const child = {
+                ref: childRef,
+                dict: childDict,
+                clone: null,
+                count: Number.isInteger(childCount) ? childCount : null,
+                parent,
+                children: [],
+                isRoot: false
+              };
+              walkChildren(child);
+              parent.children.push(child);
+              childRef = childDict.getRaw("Next");
+            }
+          };
+          let root = null;
+          const rootRef = catalog.getRaw("Outlines");
+          if (rootRef instanceof Ref) {
+            const rootDict = xref.fetch(rootRef);
+            if (rootDict instanceof Dict) {
+              const rootCount = rootDict.get("Count");
+              root = {
+                ref: rootRef,
+                dict: rootDict,
+                clone: null,
+                count: Number.isInteger(rootCount) ? rootCount : null,
+                parent: null,
+                children: [],
+                isRoot: true
+              };
+              walkChildren(root);
+            }
+          }
+          if (hasDeleteOutline && root) {
+            const toDelete = [];
+            for (const path of deleteOutline) {
+              if (!Array.isArray(path) || path.length === 0 || !path.every(i => Number.isInteger(i) && i >= 0)) {
+                continue;
+              }
+              let node = root;
+              for (const idx of path) {
+                node = node?.children[idx];
+              }
+              if (node) {
+                toDelete.push(node);
+              }
+            }
+            for (const node of toDelete) {
+              const parent = node.parent;
+              const idx = parent.children.indexOf(node);
+              if (idx === -1) {
+                continue;
+              }
+              parent.children.splice(idx, 1);
+              const prev = parent.children[idx - 1] ?? null;
+              const next = parent.children[idx] ?? null;
+              if (prev) {
+                const prevClone = getClone(prev);
+                if (next) {
+                  prevClone.set("Next", next.ref);
+                } else {
+                  prevClone.delete("Next");
+                }
+              }
+              if (next) {
+                const nextClone = getClone(next);
+                if (prev) {
+                  nextClone.set("Prev", prev.ref);
+                } else {
+                  nextClone.delete("Prev");
+                }
+              }
+              const parentClone = getClone(parent);
+              if (!prev) {
+                if (next) {
+                  parentClone.set("First", next.ref);
+                } else {
+                  parentClone.delete("First");
+                }
+              }
+              if (!next) {
+                if (prev) {
+                  parentClone.set("Last", prev.ref);
+                } else {
+                  parentClone.delete("Last");
+                }
+              }
+              const visibleRemoved = 1 + (node.count > 0 ? node.count : 0);
+              let ancestor = parent;
+              while (ancestor) {
+                const wasOpen = ancestor.isRoot || ancestor.count > 0;
+                if (ancestor.count !== null) {
+                  ancestor.count = ancestor.count > 0 ? Math.max(0, ancestor.count - visibleRemoved) : Math.min(0, ancestor.count + visibleRemoved);
+                  getClone(ancestor).set("Count", ancestor.count);
+                }
+                if (!wasOpen) {
+                  break;
+                }
+                ancestor = ancestor.parent;
+              }
+            }
+          }
+          if (hasNewOutline) {
+            const newItems = [];
+            for (const entry of newOutline) {
+              if (!Number.isInteger(entry?.pageIndex) || entry.pageIndex < 0 || entry.pageIndex >= numPages) {
+                continue;
+              }
+              const page = await pdfManager.getPage(entry.pageIndex);
+              if (page.ref instanceof Ref) {
+                newItems.push({
+                  title: typeof entry.title === "string" ? entry.title : "",
+                  pageRef: page.ref,
+                  left: typeof entry.left === "number" ? entry.left : null,
+                  top: typeof entry.top === "number" ? entry.top : null
+                });
+              }
+            }
+            if (newItems.length > 0) {
+              const itemRefs = newItems.map(() => xref.getNewTemporaryRef());
+              if (!root) {
+                const newRootDict = new Dict(xref);
+                newRootDict.set("Type", Name.get("Outlines"));
+                newRootDict.set("Count", 0);
+                root = {
+                  ref: xref.getNewTemporaryRef(),
+                  dict: null,
+                  clone: newRootDict,
+                  count: 0,
+                  parent: null,
+                  children: [],
+                  isRoot: true
+                };
+                touched.add(root);
+                const newCatalog = catalog.clone();
+                newCatalog.set("Outlines", root.ref);
+                changes.put(catalogRef, {
+                  data: newCatalog
+                });
+              }
+              const rootClone = getClone(root);
+              const lastNode = root.children.at(-1) ?? null;
+              if (lastNode) {
+                getClone(lastNode).set("Next", itemRefs[0]);
+              } else {
+                rootClone.set("First", itemRefs[0]);
+              }
+              rootClone.set("Last", itemRefs.at(-1));
+              if (root.count !== null) {
+                root.count = Math.max(0, root.count) + newItems.length;
+                rootClone.set("Count", root.count);
+              }
+              for (let i = 0, ii = newItems.length; i < ii; i++) {
+                const {
+                  title,
+                  pageRef,
+                  left,
+                  top
+                } = newItems[i];
+                const itemDict = new Dict(xref);
+                itemDict.set("Title", stringToUTF16String(title, true));
+                itemDict.set("Parent", root.ref);
+                itemDict.set("Dest", [pageRef, Name.get("XYZ"), left, top, null]);
+                const prevRef = i > 0 ? itemRefs[i - 1] : lastNode?.ref;
+                if (prevRef) {
+                  itemDict.set("Prev", prevRef);
+                }
+                if (i < ii - 1) {
+                  itemDict.set("Next", itemRefs[i + 1]);
+                }
+                changes.put(itemRefs[i], {
+                  data: itemDict
+                });
+              }
+            }
+          }
+          for (const node of touched) {
+            changes.put(node.ref, {
+              data: node.clone
+            });
+          }
+        }
+      }
       let xfaData = null;
       if (isPureXfa) {
         xfaData = refs[0];

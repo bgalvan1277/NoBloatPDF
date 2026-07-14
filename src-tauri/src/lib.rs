@@ -33,6 +33,37 @@ fn pending_files(state: tauri::State<PendingFiles>) -> Vec<String> {
     state.0.lock().unwrap().drain(..).collect()
 }
 
+/// Writes the saved PDF bytes to disk. The bytes arrive as the raw invoke
+/// body (no JSON serialization of megabytes of data); the destination path
+/// arrives percent-encoded in a header because invoke headers are ASCII-only.
+/// The write is atomic: a sibling temp file is written first, then renamed
+/// over the target, so a crash mid-write can never leave a corrupt PDF.
+#[tauri::command]
+fn save_pdf(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let encoded = request
+        .headers()
+        .get("x-save-path")
+        .ok_or("missing x-save-path header")?
+        .to_str()
+        .map_err(|e| e.to_string())?;
+    let path = percent_encoding::percent_decode_str(encoded)
+        .decode_utf8()
+        .map_err(|e| e.to_string())?
+        .into_owned();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected binary body".into());
+    };
+    let target = std::path::Path::new(&path);
+    let mut tmp = target.as_os_str().to_owned();
+    tmp.push(".nb-saving");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
+}
+
 // async: creating a webview window inside a synchronous command deadlocks
 // the webview initialization on Windows (wry re-entrancy) — the shell
 // appears but stays blank and unresponsive.
@@ -71,7 +102,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(PendingFiles(Mutex::new(paths_from_args(std::env::args()))))
-        .invoke_handler(tauri::generate_handler![pending_files, show_about])
+        .invoke_handler(tauri::generate_handler![pending_files, show_about, save_pdf])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {

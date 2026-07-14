@@ -168,6 +168,33 @@ body[data-pdfjsprinting] {
   color: #fff;
 }
 
+/* Unsaved bookmark changes: dot after the tab name. */
+.nb-tab.nb-dirty .nb-tab-name::after {
+  content: ' •';
+  opacity: 0.9;
+}
+
+/* Transient save confirmation, injected by nobloat.js. */
+#nobloatToast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  translate: -50%;
+  padding: 8px 16px;
+  border-radius: 6px;
+  background: rgb(20 20 25 / 0.92);
+  color: #fff;
+  font-size: 13px;
+  z-index: 10000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+
+#nobloatToast.nb-show {
+  opacity: 1;
+}
+
 /* Branded empty state, injected by nobloat.js; hidden once a document opens.
    pointer-events: none keeps drag-and-drop and clicks working through it. */
 #nobloatEmptyState {
@@ -201,4 +228,124 @@ body[data-pdfjsprinting] {
 #nobloatEmptyState .nb-hint {
   font-size: 13px;
   opacity: 0.7;
+}
+
+/* Bookmarks: toolbar button icon (inline SVG instead of pdf.js's masked
+   ::before icons) and rename/delete controls on bookmark rows in the
+   outline sidebar, injected by nobloat.js. */
+#nobloatAddBookmark {
+  color: var(--toolbar-icon-bg-color);
+}
+
+#nobloatAddBookmark:is(:hover, :focus-visible) {
+  color: var(--toolbar-icon-hover-bg-color, var(--toolbar-icon-bg-color));
+}
+
+#nobloatAddBookmark svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* pdf.js paints .toolbarButton::before as a mask-image icon; with no mask set
+   it shows as a solid block, so suppress it (the inline SVG is the icon). */
+#nobloatAddBookmark::before {
+  content: none;
+}
+
+#outlinesView .treeItem.nb-bookmark {
+  position: relative;
+}
+
+/* "Save changes to PDF" bar: appears at the top of the bookmarks panel
+   whenever there are unsaved bookmark edits. */
+#nbSaveBookmarksRow {
+  padding: 6px 6px 2px;
+}
+
+#nbSaveBookmarksRow button {
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  border: 0;
+  border-radius: 4px;
+  background: var(--nb-primary);
+  color: #fff;
+}
+
+#nbSaveBookmarksRow button:hover {
+  background: var(--nb-primary-dark);
+}
+
+/* "+ Add bookmark" row pinned at the top of the bookmarks panel. */
+#nbAddBookmarkRow {
+  padding: 4px 6px 8px;
+}
+
+#nbAddBookmarkRow button {
+  width: 100%;
+  padding: 6px 10px;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  border: 1px dashed light-dark(rgb(0 0 0 / 0.4), rgb(255 255 255 / 0.4));
+  border-radius: 4px;
+  background: transparent;
+  color: var(--treeitem-color, light-dark(rgb(0 0 0 / 0.8), rgb(255 255 255 / 0.8)));
+}
+
+#nbAddBookmarkRow button:hover {
+  background: var(--treeitem-bg-color, rgb(0 0 0 / 0.15));
+  color: var(--treeitem-hover-color, inherit);
+}
+
+/* Rename/delete controls on a bookmark row: hidden until the row is hovered
+   or focused, then shown as solid chips so they stay readable over the
+   title text. */
+.nb-bm-controls {
+  position: absolute;
+  top: 1px;
+  inset-inline-end: 4px;
+  display: none;
+  gap: 4px;
+}
+
+.treeItem.nb-bookmark:hover > .nb-bm-controls,
+.treeItem.nb-bookmark:focus-within > .nb-bm-controls {
+  display: inline-flex;
+}
+
+.nb-bm-controls button {
+  border: 0;
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 22px;
+  background: light-dark(rgb(255 255 255 / 0.95), rgb(66 65 77 / 0.95));
+  box-shadow: 0 0 3px rgb(0 0 0 / 0.4);
+  color: var(--treeitem-color, light-dark(rgb(0 0 0 / 0.8), rgb(255 255 255 / 0.8)));
+  cursor: pointer;
+}
+
+.nb-bm-controls button:hover {
+  background: light-dark(rgb(228 228 236), rgb(88 88 98));
+  color: var(--treeitem-hover-color, inherit);
+}
+
+/* The sidebar lives inside #toolbarViewer, where the brand skin turns
+   --main-color/--field-* white for the blue bar, so the input must use its
+   own theme-aware colors (white-on-white otherwise). */
+.nb-bm-input {
+  box-sizing: border-box;
+  width: calc(100% - 8px);
+  margin: 1px 4px;
+  font: inherit;
+  color: light-dark(rgb(12 12 13), rgb(249 249 250));
+  background: light-dark(rgb(255 255 255), rgb(64 64 68));
+  border: 1px solid light-dark(rgb(187 187 188), rgb(115 115 115));
+  border-radius: 3px;
+  padding: 1px 4px;
 }

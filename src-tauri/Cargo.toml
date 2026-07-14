@@ -1,6 +1,6 @@
 [package]
 name = "no-bloat-pdf"
-version = "1.0.0"
+version = "1.1.0"
 description = "Minimal, fast, branded PDF viewer"
 authors = ["Brian Galvan"]
 edition = "2021"
@@ -24,6 +24,9 @@ serde_json = "1"
 tauri-plugin-single-instance = "2.4.2"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-opener = "2.5.4"
+# Already in the tree via tauri's url dependency; used to decode the
+# save-target path header of the save_pdf command.
+percent-encoding = "2"
 
 [profile.release]
 codegen-units = 1
