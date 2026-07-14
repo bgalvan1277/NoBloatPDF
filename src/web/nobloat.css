@@ -9,6 +9,12 @@
   --nb-primary-dark: #10007a;
   --nb-secondary: #80b4f6;
 
+  /* Toolbar ~20% larger than stock (32px/16px): easier to see and click.
+     Everything downstream (buttons, findbar, sidebar offset) derives from
+     these two pdf.js variables. */
+  --toolbar-height: 38px;
+  --icon-size: 19px;
+
   --toolbar-bg-color: var(--nb-primary);
   --toolbar-border-color: var(--nb-primary-dark);
   --progressBar-color: var(--nb-secondary);
@@ -53,9 +59,127 @@
   --dropdown-btn-bg-color: light-dark(rgb(215 215 219), rgb(74 74 79));
 }
 
-/* --- Tab bar -------------------------------------------------------------
-   body becomes a flex column: tab strip on top, #outerContainer fills the
-   rest (its own height:100% is overridden by flex sizing). */
+/* --- Header strip (File / Tools / About + tabs) ----------------------------
+   Single top row injected by nobloat.js as the first body child: menu
+   buttons on the left, the tab strip (#nobloatTabBar) filling the rest. */
+#nobloatMenuBar {
+  flex: 0 0 36px;
+  display: flex;
+  align-items: stretch;
+  padding: 0 6px 0 4px;
+  background: var(--nb-primary-dark);
+  font: 13px system-ui, sans-serif;
+  user-select: none;
+  /* Popups must paint over the toolbar/viewer stacking contexts below. */
+  position: relative;
+  z-index: 20000;
+}
+
+.nb-menu {
+  position: relative;
+  display: flex;
+}
+
+.nb-menu-btn {
+  align-self: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgb(255 255 255 / 0.85);
+  padding: 5px 10px;
+  font: inherit;
+  cursor: default;
+}
+
+.nb-menu-btn:hover,
+.nb-menu.nb-open .nb-menu-btn {
+  background: rgb(255 255 255 / 0.15);
+  color: #fff;
+}
+
+.nb-menu-popup {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 230px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: light-dark(rgb(249 249 250), rgb(56 56 61));
+  color: light-dark(rgb(12 12 13), rgb(249 249 250));
+  border: 1px solid light-dark(rgb(184 184 184), rgb(12 12 13));
+  border-radius: 0 6px 6px 6px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.35);
+}
+
+.nb-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  padding: 5px 10px 5px 4px;
+  font: inherit;
+  text-align: start;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.nb-menu-item:not(:disabled):hover {
+  background: var(--nb-primary);
+  color: #fff;
+}
+
+.nb-menu-item:disabled {
+  opacity: 0.5;
+}
+
+.nb-menu-check {
+  flex: 0 0 auto;
+  width: 16px;
+  text-align: center;
+}
+
+.nb-menu-label {
+  flex: 1 1 auto;
+}
+
+.nb-menu-shortcut {
+  margin-inline-start: 24px;
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.nb-menu-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: light-dark(rgb(0 0 0 / 0.15), rgb(255 255 255 / 0.15));
+}
+
+/* The menu bar supersedes the toolbar's save button and the » Tools toggle.
+   Hidden, not removed: the Tools menu proxies clicks to the buttons that
+   live inside #secondaryToolbarToggle's popup, and pdf.js still wires both.
+   The stray separator is the one that sat between the print group and ». */
+#downloadButton,
+#secondaryToolbarToggle,
+#toolbarViewerRight > .verticalToolbarSeparator:not(#editorModeSeparator) {
+  display: none;
+}
+
+/* pdf.js hides the print group at narrow widths, expecting the » menu to
+   take over; with » gone, keep it in the toolbar at every width. */
+@media all and (max-width: 840px) {
+  #toolbarViewerRight .toolbarHorizontalGroup.hiddenMediumView {
+    display: flex !important;
+  }
+}
+
+/* --- Tab strip -------------------------------------------------------------
+   Lives inside the header strip, to the right of the menus. body becomes a
+   flex column: header strip, then #outerContainer fills the rest (its own
+   height:100% is overridden by flex sizing). */
 body {
   display: flex;
   flex-direction: column;
@@ -68,12 +192,13 @@ body {
 }
 
 #nobloatTabBar {
-  flex: 0 0 36px;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: stretch;
   gap: 2px;
-  padding: 4px 6px 0;
-  background: var(--nb-primary-dark);
+  padding: 6px 0 0;
+  margin-inline-start: 10px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -90,7 +215,8 @@ body[data-pdfjsprinting] {
     display: block;
   }
 
-  #nobloatTabBar {
+  #nobloatTabBar,
+  #nobloatMenuBar {
     display: none;
   }
 }
@@ -174,6 +300,312 @@ body[data-pdfjsprinting] {
   opacity: 0.9;
 }
 
+/* --- Modals (About / Special Thanks / License) ------------------------------
+   Centered <dialog>s over the viewer, injected by nobloat.js (native
+   <dialog>, so centering/Esc/backdrop come for free). */
+.nb-modal {
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  background: light-dark(#fff, rgb(45 45 50));
+  color: light-dark(rgb(12 12 13), rgb(249 249 250));
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.45);
+}
+
+.nb-modal::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+.nb-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.nb-modal-footer button {
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 22px;
+  font: inherit;
+  font-weight: 600;
+  background: var(--nb-primary);
+  color: #fff;
+  cursor: pointer;
+}
+
+.nb-modal-footer button:hover {
+  background: var(--nb-primary-dark);
+}
+
+/* About modal: compact hero (small wordmark left, pills stacked right),
+   then the story/author cards and action buttons. */
+#nbAboutDialog {
+  width: min(640px, 92vw);
+  max-height: 92vh;
+}
+
+.nb-about-box {
+  display: flex;
+  flex-direction: column;
+  max-height: inherit;
+  overflow-y: auto;
+  font: 13.5px/1.55 system-ui, sans-serif;
+}
+
+.nb-about-hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 22px;
+  background: linear-gradient(140deg, #12006e 0%, var(--nb-primary) 48%, #3d2fd1 100%);
+}
+
+.nb-about-wordmark {
+  width: 200px;
+  max-width: 46%;
+  display: block;
+  filter: drop-shadow(0 4px 14px rgb(0 0 40 / 0.3));
+}
+
+.nb-about-pills {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  /* Clear the close button pinned to the hero's top-right corner. */
+  margin-inline-end: 30px;
+}
+
+.nb-pill {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.13);
+  border: 1px solid rgb(255 255 255 / 0.22);
+  color: #fff;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.nb-pill-accent {
+  background: rgb(128 180 246 / 0.2);
+  border-color: rgb(128 180 246 / 0.45);
+  color: #dbe9ff;
+}
+
+.nb-modal-x {
+  position: absolute;
+  top: 8px;
+  inset-inline-end: 8px;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  background: rgb(255 255 255 / 0.15);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nb-modal-x:hover {
+  background: rgb(255 255 255 / 0.3);
+}
+
+.nb-about-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px 10px;
+  background: light-dark(#eef0f7, #121118);
+}
+
+.nb-about-card {
+  background: light-dark(#fff, #1d1c26);
+  border: 1px solid light-dark(rgb(24 0 173 / 0.08), rgb(255 255 255 / 0.07));
+  border-radius: 12px;
+  padding: 12px 16px;
+}
+
+.nb-about-card p {
+  margin: 0;
+}
+
+.nb-about-card p + p {
+  margin-top: 8px;
+}
+
+.nb-about-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: light-dark(var(--nb-primary), var(--nb-secondary));
+  margin-bottom: 6px;
+}
+
+.nb-about-author {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.nb-about-avatar {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow:
+    0 0 0 2px light-dark(#fff, #1d1c26),
+    0 0 0 4px light-dark(var(--nb-primary), var(--nb-secondary));
+}
+
+.nb-about-name {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.nb-about-tagline {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-bottom: 6px;
+}
+
+.nb-about-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.nb-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: light-dark(#eef0fb, #2a2838);
+  color: light-dark(#3d2fd1, #a9c6f8);
+  white-space: nowrap;
+}
+
+.nb-about-actions {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.nb-about-cta {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  background: linear-gradient(135deg, var(--nb-primary), #3d2fd1);
+  color: #fff;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.nb-about-cta:hover {
+  filter: brightness(1.12);
+}
+
+.nb-about-cta span {
+  font-size: 11px;
+  font-weight: 400;
+  color: rgb(255 255 255 / 0.72);
+}
+
+.nb-about-coffee {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.nb-about-coffee:hover {
+  filter: brightness(1.06);
+}
+
+.nb-about-coffee img {
+  height: 44px;
+  width: auto;
+  display: block;
+}
+
+.nb-about-box footer {
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* Special Thanks modal. */
+#nbThanksDialog {
+  width: min(560px, 90vw);
+}
+
+.nb-thanks-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 24px;
+  font: 13.5px/1.6 system-ui, sans-serif;
+}
+
+.nb-thanks-box h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.nb-thanks-box p {
+  margin: 0;
+}
+
+/* License modal. */
+#nbLicenseDialog {
+  width: min(760px, 90vw);
+  height: min(700px, 82vh);
+}
+
+.nb-license-box {
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px 24px;
+  font: 13px system-ui, sans-serif;
+}
+
+.nb-license-box h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.nb-license-credits {
+  margin: 0;
+  opacity: 0.75;
+}
+
+.nb-license-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.5;
+  background: light-dark(rgb(0 0 0 / 0.05), rgb(0 0 0 / 0.3));
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
 /* Transient save confirmation, injected by nobloat.js. */
 #nobloatToast {
   position: fixed;
@@ -242,8 +674,8 @@ body[data-pdfjsprinting] {
 }
 
 #nobloatAddBookmark svg {
-  width: 16px;
-  height: 16px;
+  width: var(--icon-size, 16px);
+  height: var(--icon-size, 16px);
 }
 
 /* pdf.js paints .toolbarButton::before as a mask-image icon; with no mask set
