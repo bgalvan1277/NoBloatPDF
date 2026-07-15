@@ -130,7 +130,9 @@ jobs:
 
       - name: Launch app with PDF and screenshot
         run: |
-          open -a "No Bloat PDF" "$PWD/smoke-test.pdf"
+          # Full path, not app name: LaunchServices may not have registered
+          # the just-copied app yet, and name lookup then fails.
+          open -a "/Applications/No Bloat PDF.app" "$PWD/smoke-test.pdf"
           sleep 10
           screencapture -x shot-10s.png
           sleep 15
