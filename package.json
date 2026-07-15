@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node scripts/test-webkit-compat.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

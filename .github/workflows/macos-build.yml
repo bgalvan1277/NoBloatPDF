@@ -4,7 +4,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Deletes every modern JS API pdf.js needs (simulating the Safari 16.4
+  # floor), installs our polyfills, and opens a real PDF end to end. Gates
+  # the build: an incomplete polyfill set is exactly what shipped broken in
+  # v1.2.0 ("getOrInsertComputed is not a function" on every document open).
+  compat-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/test-webkit-compat.mjs
+
   build:
+    needs: compat-test
     strategy:
       fail-fast: false
       matrix:
@@ -51,17 +65,39 @@ jobs:
           if-no-files-found: error
 
   # Install the freshly built DMG on the (Apple Silicon) runner, launch the
-  # app with a generated PDF, and screenshot it — visual proof on current
-  # macOS for every build. Screenshot lands in the "smoke-test-screenshots"
-  # artifact.
+  # app with a generated PDF, and PROVE the page rendered: screenshot the app
+  # window and require a large near-white region (the rendered page). A
+  # process-alive check is not enough; the v1.2.0 open-failure dialog kept
+  # the process running and screenshots were never inspected. Also runs the
+  # polyfill set through this macOS's own JavaScriptCore (the engine
+  # WKWebView uses) as a builtin-availability check.
+  # macos-15 matters most: its WebKit (Safari 18.x) lacks the newest JS
+  # builtins, so it fails exactly like end-user Macs did on v1.2.0 unless
+  # the polyfills cover them. macos-latest proves current macOS too.
   smoke-test:
     needs: build
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - uses: actions/download-artifact@v4
         with:
           name: NoBloatPDF-macos-apple-silicon
           path: dmg
+
+      - name: Verify JS builtins in this macOS's JavaScriptCore
+        run: |
+          JSC="$(find /System/Library/Frameworks/JavaScriptCore.framework -name jsc -type f 2>/dev/null | head -1)"
+          echo "jsc: $JSC"
+          "$JSC" src/web/polyfills.js scripts/check-jsc-apis.js
 
       - name: Install app from dmg
         run: |
@@ -104,9 +140,21 @@ jobs:
           screencapture -x shot-25s.png
           pgrep -x no-bloat-pdf || { echo "app not running"; exit 1; }
 
+      - name: Verify the PDF page actually rendered
+        run: |
+          if WINDOW_ID="$(swift scripts/find-window-id.swift "No Bloat")"; then
+            echo "app window id: $WINDOW_ID"
+            screencapture -x -o -l "$WINDOW_ID" shot-window.png || true
+          fi
+          # Window capture is preferred (no wallpaper noise); fall back to the
+          # full-screen shot if it was unavailable or blocked by TCC.
+          node scripts/check-smoke-screenshot.mjs shot-window.png 0.15 \
+            || node scripts/check-smoke-screenshot.mjs shot-25s.png 0.15
+
       - name: Upload screenshots
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-test-screenshots
+          name: smoke-test-screenshots-${{ matrix.os }}
           path: shot-*.png
           if-no-files-found: error
