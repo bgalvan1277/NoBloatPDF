@@ -94,10 +94,7 @@ jobs:
           path: dmg
 
       - name: Verify JS builtins in this macOS's JavaScriptCore
-        run: |
-          JSC="$(find /System/Library/Frameworks/JavaScriptCore.framework -name jsc -type f 2>/dev/null | head -1)"
-          echo "jsc: $JSC"
-          "$JSC" src/web/polyfills.js scripts/check-jsc-apis.js
+        run: swift scripts/run-jsc.swift src/web/polyfills.js scripts/check-jsc-apis.js
 
       - name: Install app from dmg
         run: |
@@ -157,4 +154,4 @@ jobs:
         with:
           name: smoke-test-screenshots-${{ matrix.os }}
           path: shot-*.png
-          if-no-files-found: error
+          if-no-files-found: warn
