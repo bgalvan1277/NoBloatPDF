@@ -15460,8 +15460,8 @@ class PDFDocumentProxy {
   saveDocument(options = null) {
     return this._transport.saveDocument(options);
   }
-  extractPages(pageInfos) {
-    return this._transport.extractPages(pageInfos);
+  extractPages(pageInfos, options = null) {
+    return this._transport.extractPages(pageInfos, options);
   }
   getDownloadInfo() {
     return this._transport.downloadInfoCapability.promise;
@@ -16531,10 +16531,13 @@ class WorkerTransport {
       this.annotationStorage.resetModified();
     });
   }
-  extractPages(pageInfos) {
+  extractPages(pageInfos, options = null) {
     const params = {
       pageInfos
     };
+    if (options?.sanitize) {
+      params.sanitize = true;
+    }
     let transfer;
     const ImageBitmapCtor = globalThis.ImageBitmap;
     if (typeof ImageBitmapCtor === "function") {

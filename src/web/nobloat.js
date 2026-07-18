@@ -477,10 +477,12 @@ window.nobloatSaveFile = async function (data, suggestedName) {
   // File > Save presets the tab's own path; everything else asks where to save.
   const preset = directSaveTarget;
   directSaveTarget = null;
+  const dialogDefault = saveDialogDefault;
+  saveDialogDefault = null;
   const target =
     preset ??
     (await window.__TAURI__.dialog.save({
-      defaultPath: tab?.path ?? suggestedName ?? 'document.pdf',
+      defaultPath: dialogDefault ?? tab?.path ?? suggestedName ?? 'document.pdf',
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     }));
   if (!target) return false; // user cancelled the dialog
@@ -538,6 +540,11 @@ let appVersion = '';
 // to save. Consumed (and cleared) by the first save that follows.
 let directSaveTarget = null;
 
+// When set, the Save dialog defaults here instead of the tab's own file (used
+// by Sanitize Document so a slip of the finger doesn't overwrite the
+// original). Consumed (and cleared) by the first save that follows.
+let saveDialogDefault = null;
+
 function dispatchDownload() {
   window.PDFViewerApplication?.eventBus?.dispatch('download', { source: 'nobloatMenu' });
 }
@@ -553,6 +560,36 @@ function saveActiveTabAs() {
   if (!activeTab()) return;
   directSaveTarget = null;
   dispatchDownload();
+}
+
+// File > Sanitize Document: rebuild the PDF from scratch through the worker's
+// page extractor (with its nobloat sanitize flag) instead of the incremental
+// save path. Only objects the pages actually reference are copied, so document
+// metadata (Author, Title, Creator, dates), XMP metadata, document JavaScript,
+// deleted content, and prior saved revisions do not survive into the new file.
+// Unsaved annotation edits are baked in; the file's own outline is kept, but
+// this session's pending bookmark edits are not (they ride the normal save).
+async function sanitizeActiveTab() {
+  const tab = activeTab();
+  const doc = window.PDFViewerApplication?.pdfDocument;
+  if (!tab || !doc) return;
+  try {
+    const data = await doc.extractPages([{ document: null }], { sanitize: true });
+    if (!data) throw new Error('The document could not be rewritten.');
+    directSaveTarget = null;
+    saveDialogDefault = tab.path
+      ? tab.path.replace(/\.pdf$/i, '') + '-sanitized.pdf'
+      : 'sanitized.pdf';
+    await window.nobloatSaveFile(data, 'sanitized.pdf');
+  } catch (err) {
+    console.error('No Bloat PDF: sanitize failed', err);
+    window.__TAURI__.dialog
+      .message(`Couldn't sanitize the PDF.\n\n${err?.message ?? err}`, {
+        title: 'No Bloat PDF',
+        kind: 'error',
+      })
+      .catch(() => {});
+  }
 }
 
 // [buttonId, English fallback]; null = separator. Labels are read from the
@@ -593,6 +630,7 @@ function fileMenuItems() {
       enabled: hasDoc,
       action: saveActiveTabAs,
     },
+    { label: 'Sanitize Document…', enabled: hasDoc, action: sanitizeActiveTab },
     { type: 'separator' },
     {
       label: 'Print…',
