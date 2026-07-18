@@ -61549,7 +61549,8 @@ class PDFEditor {
   constructor({
     useObjectStreams = true,
     title = "",
-    author = ""
+    author = "",
+    sanitize = false
   } = {}) {
     [this.rootRef, this.rootDict] = this.newDict;
     [this.infoRef, this.infoDict] = this.newDict;
@@ -61558,6 +61559,7 @@ class PDFEditor {
     this.objStreamRefs = useObjectStreams ? new Set() : null;
     this.title = title;
     this.author = author;
+    this.sanitize = sanitize;
   }
   get newRef() {
     return Ref.get(this.newRefCount++, 0);
@@ -63651,6 +63653,11 @@ class PDFEditor {
   }
   #makeInfo() {
     const infoMap = new Map();
+    // nobloat sanitize: emit an empty Info dict so no document metadata
+    // (Author, Title, Creator, dates, ...) carries into the rewritten file.
+    if (this.sanitize) {
+      return infoMap;
+    }
     if (this.isSingleFile) {
       const firstRealPage = this.oldPages.find(p => !!p);
       const {
@@ -64346,7 +64353,8 @@ class WorkerMessageHandler {
     });
     handler.on("ExtractPages", async function ({
       pageInfos,
-      annotationStorage
+      annotationStorage,
+      sanitize
     }) {
       if (!pageInfos) {
         warn("extractPages: nothing to extract.");
@@ -64419,7 +64427,9 @@ class WorkerMessageHandler {
       }
       let task;
       try {
-        const pdfEditor = new PDFEditor();
+        const pdfEditor = new PDFEditor({
+          sanitize: sanitize === true
+        });
         task = new WorkerTask(`ExtractPages: ${pageInfos.length} page(s)`);
         startWorkerTask(task);
         const buffer = await pdfEditor.extractPages(pageInfos, annotationStorage, pdfManager.pdfDocument, handler, task);

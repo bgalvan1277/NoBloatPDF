@@ -1,6 +1,6 @@
 [package]
 name = "no-bloat-pdf"
-version = "1.2.1"
+version = "1.3.0"
 description = "Minimal, fast, branded PDF viewer"
 authors = ["Brian Galvan"]
 edition = "2021"
