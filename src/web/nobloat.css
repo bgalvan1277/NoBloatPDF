@@ -112,6 +112,16 @@
   box-shadow: 0 4px 14px rgb(0 0 0 / 0.35);
 }
 
+/* The same popup, placed at the pointer instead of under a menu-bar button.
+   Fixed and body-level so the sidebar's scroll container cannot clip it, and
+   above the menu bar's own stacking context (z-index 20000). */
+.nb-context-popup {
+  position: fixed;
+  min-width: 190px;
+  border-radius: 6px;
+  z-index: 20001;
+}
+
 .nb-menu-item {
   display: flex;
   align-items: center;

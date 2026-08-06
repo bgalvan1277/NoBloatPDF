@@ -19106,6 +19106,14 @@ const PDFViewerApplication = {
     } = this.appConfig.appContainer;
     classList.add("wait");
     if (this.pdfThumbnailViewer?.hasStructuralChanges()) {
+      // Page edits are saved by rebuilding the file through extractPages,
+      // which takes no outline argument: pending bookmark edits cannot ride
+      // along on this path and would be dropped without a word. Let the host
+      // warn (and offer to back out) before that happens.
+      if (window.nobloatConfirmPageSave && !(await window.nobloatConfirmPageSave())) {
+        classList.remove("wait");
+        return;
+      }
       this.externalServices.reportTelemetry({
         type: "pageOrganization",
         data: {
@@ -19823,7 +19831,8 @@ const PDFViewerApplication = {
     this.pdfViewer.onPagesEdited(data);
   },
   async onSavePages({
-    data: extractParams
+    data: extractParams,
+    source
   }) {
     if (!this.downloadManager) {
       return;
@@ -19836,7 +19845,17 @@ const PDFViewerApplication = {
       console.error("Something wrong happened when saving the edited PDF.\nPlease file a bug.");
       return;
     }
-    this.downloadManager.download(modifiedPdfBytes, this._downloadUrl, this._docFilename);
+    if (window.nobloatSaveFile) {
+      // Two callers land here. The "saveextractedpages" event carries a
+      // source and means Export selected pages: a new document carved out of
+      // the open one, which must never default to overwriting it. A save of
+      // page edits comes straight from downloadOrSave with no source and is
+      // an in-place edit of the open file.
+      window.nobloatOnExtractSave?.(!!source);
+      await window.nobloatSaveFile(modifiedPdfBytes, this._docFilename);
+    } else {
+      this.downloadManager.download(modifiedPdfBytes, this._downloadUrl, this._docFilename);
+    }
   },
   async onSaveAndLoad({
     data: extractParams

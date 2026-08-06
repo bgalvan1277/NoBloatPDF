@@ -6,7 +6,7 @@ signatures. Zero network calls: no telemetry, no ads, no accounts, no cloud.
 
 **Website & download:** https://www.nobloatpdf.com
 
-![No Bloat PDF with tabs open](docs/screenshot-tabs.png)
+![No Bloat PDF with tabs open](website/assets/screenshot-tabs.png)
 
 ## Why
 
@@ -20,13 +20,15 @@ small, instant, quiet, and free forever. The longer version is on the
 - Opens PDFs instantly, including large, scanned, CJK, and password-protected files
 - Tabs for multiple documents in one window (Ctrl+Tab / Ctrl+W)
 - Full text search, thumbnails, bookmarks, outline, zoom, rotate
+- Delete, reorder, and export pages from the Pages panel, with undo
 - Highlighting, text notes, freehand drawing, stamps, and signatures
 - Fills standard PDF forms and saves locally
 - High-resolution printing, dark mode, remembers your place in every file
 - Makes zero network calls. Works identically with the internet unplugged
 
-What it deliberately does not do: heavy PDF editing. Staying a viewer is how
-it stays 4.6 MB and instant.
+What it deliberately does not do: edit page content, meaning rewriting the
+text or moving the objects on a page. Organizing pages is in; redrawing them
+is not. Staying a viewer is how it stays 4.6 MB and instant.
 
 ## How it's built
 

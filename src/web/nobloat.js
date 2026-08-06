@@ -17,11 +17,33 @@ function shortcutLabel(win) {
   return win.replace(/Ctrl\+Shift\+/g, '⇧⌘').replace(/Ctrl\+/g, '⌘');
 }
 
+// Opens a URL in the system browser. The opener plugin rejects if the URL is
+// outside the capability's scope (see src-tauri/capabilities/default.json), so
+// never swallow the failure: a silently dead link reads to the user as a
+// broken button with nothing to go on.
+async function openExternal(url) {
+  try {
+    await window.__TAURI__.opener.openUrl(url);
+  } catch (err) {
+    console.error('No Bloat PDF: could not open', url, err);
+    window.__TAURI__.dialog
+      .message(`Couldn't open your browser for:\n${url}`, { title: 'No Bloat PDF', kind: 'error' })
+      .catch(() => {});
+  }
+}
+
 document.addEventListener('webviewerloaded', () => {
   const opts = window.PDFViewerApplicationOptions;
   opts.set('defaultUrl', ''); // never load the bundled Mozilla demo document
   opts.set('enableScripting', false); // PDF-embedded JS sandbox: off (speed, size, scope)
   opts.set('printResolution', 300);
+  // Page editing in the Pages panel: per-thumbnail checkboxes, the Manage
+  // menu (Copy/Cut/Delete/Export), Delete+Backspace, drag to reorder, and the
+  // undo bar. All of it already ships in this pdf.js build behind this one
+  // preference; the markup, CSS, and strings are present in viewer.html /
+  // viewer.css / viewer.ftl. `enableMerge` stays off: its add-file button
+  // opens an <input type=file> picker, which our native-path model can't use.
+  opts.set('enableSplitMerge', true);
 });
 
 // ---------------------------------------------------------------------------
@@ -78,12 +100,34 @@ function updateChrome() {
   document.getElementById('nobloatEmptyState')?.classList.toggle('hidden', tabs.length > 0);
 }
 
-function activateTab(id, { reload = false } = {}) {
+// Leaving a document (switching tabs, or reloading it from disk) throws away
+// the viewer's in-memory edits for it: annotations, signatures, and page
+// changes live in the single pdf.js instance, not on the tab the way
+// bookmarks do. Ask before dropping them. `internal` marks our own post-save
+// reloads, where the edits have just been written and there is nothing to
+// lose.
+async function confirmLeavingDocument(id, reload) {
+  const current = activeTab();
+  if (!current || !hasDocumentEdits()) return true;
+  const leaving = current.id !== id;
+  if (!leaving && !reload) return true;
+  return confirmDiscard(
+    `"${current.name}" has edits that were not saved into the PDF, and they are lost when you ${
+      leaving ? 'switch to another tab' : 'reload it'
+    }. Continue?`
+  );
+}
+
+async function activateTab(id, { reload = false, internal = false } = {}) {
   const tab = tabs.find((t) => t.id === id);
   if (!tab) return;
   const alreadyActive = activeTabId === id;
   if (alreadyActive && !reload) return;
-  if (!alreadyActive) {
+  if (!internal && !(await confirmLeavingDocument(id, reload))) return;
+  // Re-check after the await: the tab list may have moved on while the
+  // dialog was open.
+  if (!tabs.some((t) => t.id === id)) return;
+  if (activeTabId !== id) {
     activeTabId = id;
     updateChrome();
   }
@@ -113,16 +157,11 @@ function activateTab(id, { reload = false } = {}) {
 async function closeTab(id) {
   const tab = tabs.find((t) => t.id === id);
   if (!tab) return;
-  if (tab.bookmarksDirty && (tab.bookmarks?.length || tab.deletedOutline?.length)) {
-    let ok = true;
-    try {
-      ok = await window.__TAURI__.dialog.confirm(
-        `"${tab.name}" has bookmark changes that were not saved into the PDF. Close anyway?`,
-        { title: 'No Bloat PDF', kind: 'warning' }
-      );
-    } catch {
-      /* dialog unavailable: close without blocking */
-    }
+  const outstanding = unsavedSummary(tab);
+  if (outstanding) {
+    const ok = await confirmDiscard(
+      `"${tab.name}" has ${outstanding} that were not saved into the PDF. Close it anyway?`
+    );
     if (!ok) return;
   }
   // Recompute after the await: tabs may have changed while the dialog was open.
@@ -515,15 +554,236 @@ window.nobloatSaveFile = async function (data, suggestedName) {
         kind: 'error',
       })
       .catch(() => {});
-    if (sameFile) activateTab(tab.id, { reload: true }); // reopen what we closed
+    // Reopen what we closed. Internal: nothing was written, so the edits are
+    // still the ones already in the viewer.
+    if (sameFile) activateTab(tab.id, { reload: true, internal: true });
     return false;
   }
   showToast(`Saved ${baseName(target)}`);
   if (sameFile) {
-    activateTab(tab.id, { reload: true });
+    // Internal: these edits were just written to this very file, so there is
+    // nothing to warn about discarding.
+    activateTab(tab.id, { reload: true, internal: true });
   }
   return true;
 };
+
+// ---------------------------------------------------------------------------
+// Page editing (Pages panel)
+//
+// pdf.js owns this feature end to end: the thumbnail checkboxes, Delete and
+// Backspace, drag to reorder, the undo bar, and the extractPages rebuild that
+// writes the result out. Switching it on is the single `enableSplitMerge`
+// preference set in the webviewerloaded hook at the top of this file.
+//
+// Two pieces are deliberately left to the host application:
+//
+//   1. The right-click menu. pdf.js ships no context-menu UI of its own: on
+//      contextmenu it dispatches `editingstateschanged` describing what is
+//      actionable and then performs whatever `editingaction` is dispatched
+//      back at it. Firefox answers that with a native menu; we answer with
+//      the same popup the menu bar draws.
+//   2. Warning before a page-edit save discards pending bookmark edits: see
+//      nobloatConfirmPageSave below, which viewer.mjs calls.
+
+// Selection state is pdf.js-private, but it is a pure function of the
+// thumbnail checkboxes, so read those instead of the internals. This mirrors
+// the viewer's own #canDelete(), which refuses to delete every page of a
+// document. The values only enable/disable menu rows; pdf.js re-checks before
+// acting, so a stale read can never delete something it shouldn't.
+function pagesPanelState() {
+  const boxes = [
+    ...(document.getElementById('thumbnailsView')?.querySelectorAll('.thumbnail input[type="checkbox"]') ??
+      []),
+  ];
+  const selected = boxes.filter((b) => b.checked).length;
+  return {
+    hasSelectedPages: selected > 0,
+    canDeletePages: selected > 0 && selected < boxes.length,
+  };
+}
+
+// Right-clicking a page outside the current selection makes it the selection,
+// the way file managers do; right-clicking inside an existing multi-selection
+// leaves that selection alone so the action applies to all of it. The only
+// supported way into pdf.js's selection is the checkbox click it listens for.
+function selectOnlyThumbnail(pageNumber) {
+  const container = document.getElementById('thumbnailsView');
+  if (!container) return;
+  for (const thumb of container.querySelectorAll('.thumbnail')) {
+    const box = thumb.querySelector('input[type="checkbox"]');
+    if (!box) continue;
+    const wanted = Number(thumb.getAttribute('page-number')) === pageNumber;
+    if (box.checked !== wanted) box.click();
+  }
+}
+
+// Wording follows the Pages panel's own Manage menu so the two agree.
+const PAGE_MENU_ITEMS = [
+  { name: 'deletePage', label: 'Delete', shortcut: 'Del', needs: 'delete' },
+  { name: 'cutPage', label: 'Cut', shortcut: shortcutLabel('Ctrl+X'), needs: 'delete' },
+  { name: 'copyPage', label: 'Copy', shortcut: shortcutLabel('Ctrl+C'), needs: 'select' },
+  null,
+  { name: 'savePage', label: 'Export selected…', needs: 'select' },
+];
+
+let pageMenu = null;
+
+function closePageMenu() {
+  pageMenu?.remove();
+  pageMenu = null;
+}
+
+function openPageMenu(x, y) {
+  closePageMenu();
+  const state = pagesPanelState();
+  const popup = document.createElement('div');
+  popup.className = 'nb-menu-popup nb-context-popup';
+  popup.setAttribute('role', 'menu');
+
+  for (const entry of PAGE_MENU_ITEMS) {
+    if (!entry) {
+      const sep = document.createElement('div');
+      sep.className = 'nb-menu-sep';
+      popup.append(sep);
+      continue;
+    }
+    const row = document.createElement('button');
+    row.className = 'nb-menu-item';
+    row.type = 'button';
+    row.setAttribute('role', 'menuitem');
+    row.disabled = entry.needs === 'delete' ? !state.canDeletePages : !state.hasSelectedPages;
+
+    const label = document.createElement('span');
+    label.className = 'nb-menu-label';
+    label.textContent = entry.label;
+    row.append(label);
+
+    if (entry.shortcut) {
+      const shortcut = document.createElement('span');
+      shortcut.className = 'nb-menu-shortcut';
+      shortcut.textContent = entry.shortcut;
+      row.append(shortcut);
+    }
+
+    row.addEventListener('click', () => {
+      closePageMenu();
+      window.PDFViewerApplication?.eventBus?.dispatch('editingaction', {
+        source: 'nobloatPageMenu',
+        name: entry.name,
+      });
+    });
+    popup.append(row);
+  }
+
+  // Append first, then place: the popup has to be measured to be kept inside
+  // the window when the click lands near an edge.
+  document.body.append(popup);
+  popup.style.left = `${Math.max(2, Math.min(x, window.innerWidth - popup.offsetWidth - 2))}px`;
+  popup.style.top = `${Math.max(2, Math.min(y, window.innerHeight - popup.offsetHeight - 2))}px`;
+  pageMenu = popup;
+}
+
+function initPageContextMenu() {
+  document.addEventListener('contextmenu', (ev) => {
+    const thumb = ev.target.closest?.('#thumbnailsView .thumbnail');
+    if (!thumb) {
+      closePageMenu();
+      return;
+    }
+    ev.preventDefault();
+    if (!thumb.querySelector('input[type="checkbox"]')?.checked) {
+      selectOnlyThumbnail(Number(thumb.getAttribute('page-number')));
+    }
+    openPageMenu(ev.clientX, ev.clientY);
+  });
+
+  // Dismissal: anywhere else, Esc, or anything that moves the popup off the
+  // thumbnail it was opened against.
+  document.addEventListener('pointerdown', (ev) => {
+    if (pageMenu && !pageMenu.contains(ev.target)) closePageMenu();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') closePageMenu();
+  });
+  window.addEventListener('resize', closePageMenu);
+  window.addEventListener('blur', closePageMenu);
+  document.getElementById('viewsManagerContent')?.addEventListener('scroll', closePageMenu, true);
+}
+
+// Called by viewer.mjs on its way into a save that was built by extracting
+// pages. Export selected pages produces a NEW document, so it must not offer
+// to overwrite the file it was carved out of; saving page edits is an
+// in-place change to the open file and keeps the normal target.
+window.nobloatOnExtractSave = function (isExport) {
+  if (!isExport) return;
+  const tab = activeTab();
+  directSaveTarget = null;
+  saveDialogDefault = tab?.path ? `${tab.path.replace(/\.pdf$/i, '')}-pages.pdf` : 'pages.pdf';
+};
+
+// Called by viewer.mjs before it rebuilds the file for a page-edit save. That
+// path goes through extractPages, which takes no outline argument, so pending
+// bookmark edits cannot come along; say so rather than dropping them quietly.
+window.nobloatConfirmPageSave = async function () {
+  const tab = activeTab();
+  if (!tab?.bookmarksDirty) return true;
+  try {
+    return await window.__TAURI__.dialog.confirm(
+      'Saving page changes rebuilds the PDF, and your unsaved bookmark edits cannot be carried across. Save the page changes and discard those bookmark edits?',
+      {
+        title: 'No Bloat PDF',
+        kind: 'warning',
+        okLabel: 'Save pages',
+        cancelLabel: 'Cancel',
+      }
+    );
+  } catch {
+    return true; // dialog unavailable: don't block the save
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Unsaved work
+//
+// Two kinds, tracked in two places. Bookmark edits live per tab in JS
+// (tab.bookmarksDirty), so they survive tab switches. Document edits
+// (annotations, signatures, page deletions) live inside the single pdf.js
+// viewer instance, so they only exist for whichever tab is active.
+
+function hasDocumentEdits() {
+  const app = window.PDFViewerApplication;
+  if (!app?.pdfDocument) return false;
+  // _annotationStorageModified is pdf.js's own "edited since the last write"
+  // flag: saveDocument and extractPages both clear it, so saved work stops
+  // counting without us tracking saves here. (The viewer's _hasChanges() is
+  // the wrong test for us: it asks whether the storage is non-empty, which
+  // stays true after a save and would warn about work already on disk.)
+  // Structural page edits are tracked separately and clear on reload.
+  return !!app._annotationStorageModified || !!app.pdfThumbnailViewer?.hasStructuralChanges();
+}
+
+// "edits and bookmark changes" / "edits" / "bookmark changes", or null when
+// the tab has nothing outstanding.
+function unsavedSummary(tab) {
+  const parts = [];
+  if (tab.id === activeTabId && hasDocumentEdits()) parts.push('edits');
+  if (tab.bookmarksDirty) parts.push('bookmark changes');
+  return parts.length ? parts.join(' and ') : null;
+}
+
+async function confirmDiscard(message) {
+  try {
+    return await window.__TAURI__.dialog.confirm(message, {
+      title: 'No Bloat PDF',
+      kind: 'warning',
+      okLabel: 'Discard',
+      cancelLabel: 'Cancel',
+    });
+  } catch {
+    return true; // dialog unavailable: close without blocking
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Menu bar (File / Tools / About)
@@ -666,7 +926,6 @@ function toolsMenuItems() {
 }
 
 function aboutMenuItems() {
-  const openUrl = (url) => window.__TAURI__.opener.openUrl(url).catch(() => {});
   return [
     { label: 'About No Bloat PDF', action: showAboutDialog },
     { label: 'Special Thanks', action: showThanksDialog },
@@ -674,7 +933,7 @@ function aboutMenuItems() {
     { type: 'separator' },
     {
       label: 'Check for Updates…',
-      action: () => openUrl('https://www.nobloatpdf.com/download.html'),
+      action: () => openExternal('https://www.nobloatpdf.com/download.html'),
     },
     { type: 'separator' },
     { label: 'License Information', action: showLicenseDialog },
@@ -741,7 +1000,6 @@ function showAboutDialog() {
               <div class="nb-about-tagline">Lifelong developer &amp; Martech provider</div>
               <div class="nb-about-chips">
                 <span class="nb-chip">Director of Growth &amp; Innovation · Barnes Walker</span>
-                <span class="nb-chip">CTO &amp; Co-founder · Virtual Hangar</span>
                 <span class="nb-chip">Owner · YourLegal.app</span>
               </div>
             </div>
@@ -761,7 +1019,7 @@ function showAboutDialog() {
     ]) {
       aboutDialog.querySelector(`#${id}`).addEventListener('click', (ev) => {
         ev.preventDefault();
-        window.__TAURI__.opener.openUrl(url).catch(() => {});
+        openExternal(url);
       });
     }
   }
@@ -1086,22 +1344,18 @@ window.addEventListener('DOMContentLoaded', () => {
   // same warning as closing a single tab. preventDefault() must run before
   // any await; destroy() skips this handler on the way out.
   tauriWindow.getCurrentWindow().onCloseRequested(async (event) => {
-    const dirty = tabs.filter((t) => t.bookmarksDirty);
+    const dirty = tabs.map((t) => [t, unsavedSummary(t)]).filter(([, summary]) => summary);
     if (dirty.length === 0) return;
     event.preventDefault();
-    let ok = true;
-    try {
-      ok = await window.__TAURI__.dialog.confirm(
-        dirty.length === 1
-          ? `"${dirty[0].name}" has bookmark changes that were not saved into the PDF. Close anyway?`
-          : `${dirty.length} open PDFs have bookmark changes that were not saved. Close anyway?`,
-        { title: 'No Bloat PDF', kind: 'warning' }
-      );
-    } catch {
-      /* dialog unavailable: close without blocking */
-    }
+    const ok = await confirmDiscard(
+      dirty.length === 1
+        ? `"${dirty[0][0].name}" has ${dirty[0][1]} that were not saved into the PDF. Close anyway?`
+        : `${dirty.length} open PDFs have changes that were not saved. Close anyway?`
+    );
     if (ok) tauriWindow.getCurrentWindow().destroy();
   });
+
+  initPageContextMenu();
 
   // Warm start: Rust forwards paths from a second app instance.
   tauriEvent.listen('open-file', (e) => openPaths(e.payload));

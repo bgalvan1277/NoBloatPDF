@@ -17,6 +17,8 @@ src-tauri/signing/macos/*.key
 src-tauri/signing/macos/*.p12
 src-tauri/signing/macos/*.cer
 src-tauri/signing/macos/*.pem
+src-tauri/signing/macos/p12-password.txt
+src-tauri/signing/macos/notarize-credentials.txt
 
 # Editor directories and files
 .vscode/*
@@ -28,3 +30,4 @@ src-tauri/signing/macos/*.pem
 *.njsproj
 *.sln
 *.sw?
+oss-mirror/
