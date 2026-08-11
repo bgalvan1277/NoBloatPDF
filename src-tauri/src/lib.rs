@@ -81,6 +81,30 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // The main window is declared in tauri.conf.json with `create: false`
+        // so it can be built here with a navigation guard. PDFs carry links to
+        // arbitrary websites; the frontend opens those in the system browser,
+        // and this guard is the backstop that keeps the webview itself on the
+        // app's own origin no matter what gets clicked. Navigating away would
+        // replace the viewer (and destroy every open tab and the app's own JS)
+        // with the linked website.
+        .setup(|app| {
+            let config = app
+                .config()
+                .app
+                .windows
+                .first()
+                .expect("main window config missing from tauri.conf.json")
+                .clone();
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+                .on_navigation(|url| {
+                    // tauri://localhost on macOS/Linux, http://tauri.localhost
+                    // on Windows.
+                    url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost")
+                })
+                .build()?;
+            Ok(())
+        })
         .manage(PendingFiles(Mutex::new(paths_from_args(std::env::args()))))
         .invoke_handler(tauri::generate_handler![pending_files, save_pdf])
         .build(tauri::generate_context!())

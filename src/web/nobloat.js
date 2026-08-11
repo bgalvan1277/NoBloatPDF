@@ -32,6 +32,39 @@ async function openExternal(url) {
   }
 }
 
+// PDFs can carry links to websites. pdf.js renders those as plain <a href>
+// anchors with no target (externalLinkTarget = NONE), so an uncaught click
+// navigates the webview itself: the viewer, every open tab, and all of this
+// file's JS are replaced by the website, and with the app's scripts gone the
+// window can no longer close itself or receive forwarded file opens. Catch
+// every anchor click at the document level and route anything that leaves the
+// app's own origin to the system browser. In-viewer anchors (page/outline
+// destinations, "#" hrefs with their own handlers) resolve to this page's
+// origin and pass through untouched.
+function interceptExternalAnchor(ev) {
+  const link = ev.target.closest?.('a[href]');
+  if (!link) return;
+  let url;
+  try {
+    url = new URL(link.href, location.href);
+  } catch {
+    return;
+  }
+  if (url.origin === location.origin) return;
+  ev.preventDefault();
+  ev.stopImmediatePropagation();
+  openExternal(url.href);
+}
+document.addEventListener('click', interceptExternalAnchor, { capture: true });
+// Middle-click asks the webview for a new window with the same result.
+document.addEventListener(
+  'auxclick',
+  (ev) => {
+    if (ev.button === 1) interceptExternalAnchor(ev);
+  },
+  { capture: true }
+);
+
 document.addEventListener('webviewerloaded', () => {
   const opts = window.PDFViewerApplicationOptions;
   opts.set('defaultUrl', ''); // never load the bundled Mozilla demo document
