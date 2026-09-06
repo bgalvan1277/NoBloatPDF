@@ -544,6 +544,31 @@ function showToast(text) {
   toastTimer = setTimeout(() => el.classList.remove('nb-show'), 3000);
 }
 
+// Writes PDF bytes to `target`. When that is the active tab's own file the
+// document is closed first: pdf.js may still be range-reading it, and
+// Windows refuses to replace a file that is open. Resolves to whether that
+// happened, so the caller can reopen the tab from the new bytes.
+async function writePdfBytes(target, data) {
+  const tab = activeTab();
+  const sameFile = !!tab && normPath(target) === normPath(tab.path);
+  if (sameFile) {
+    await queueViewerOp(async () => {
+      const app = window.PDFViewerApplication;
+      await app.initializedPromise;
+      try {
+        await app.close();
+      } catch {
+        /* nothing to close */
+      }
+    });
+  }
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  await core.invoke('save_pdf', bytes, {
+    headers: { 'x-save-path': encodeURIComponent(target) },
+  });
+  return sameFile;
+}
+
 window.nobloatSaveFile = async function (data, suggestedName) {
   const tab = activeTab();
   // File > Save presets the tab's own path; everything else asks where to save.
@@ -558,27 +583,12 @@ window.nobloatSaveFile = async function (data, suggestedName) {
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     }));
   if (!target) return false; // user cancelled the dialog
-  const sameFile = tab && normPath(target) === normPath(tab.path);
+  const sameFile = !!tab && normPath(target) === normPath(tab.path);
   try {
-    if (sameFile) {
-      // pdf.js may still be range-reading this file from disk; close the
-      // document before overwriting it. The tab reloads from the new bytes
-      // below (the fingerprint change then retires the session's bookmark
-      // edits, which are now part of the file itself).
-      await queueViewerOp(async () => {
-        const app = window.PDFViewerApplication;
-        await app.initializedPromise;
-        try {
-          await app.close();
-        } catch {
-          /* nothing to close */
-        }
-      });
-    }
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    await core.invoke('save_pdf', bytes, {
-      headers: { 'x-save-path': encodeURIComponent(target) },
-    });
+    // Overwriting the tab's own file: the tab reloads from the new bytes
+    // below (the fingerprint change then retires the session's bookmark
+    // edits, which are now part of the file itself).
+    await writePdfBytes(target, data);
   } catch (err) {
     console.error('No Bloat PDF: save failed', err);
     window.__TAURI__.dialog
@@ -600,6 +610,723 @@ window.nobloatSaveFile = async function (data, suggestedName) {
   }
   return true;
 };
+
+// ---------------------------------------------------------------------------
+// Combine Files
+//
+// File > Combine Files… (and the button on the empty state) opens a screen
+// over the viewer: drop PDFs and images on it or pick them with the native
+// dialog, drag the cards into order, and Combine writes one new PDF and
+// opens it in a tab. Building the PDF is pdf.js's job: the page extractor
+// that saves page edits also takes whole documents as bytes and images as
+// bitmaps, and copies their pages into a fresh file. It has to run against
+// an open document, so a one-page blank PDF made here plays host; none of
+// its pages are asked for, so nothing of it reaches the output.
+//
+// TIFF is the one format the webview cannot decode on its own, so tiff.js
+// (UTIF) is loaded the first time a TIFF is added and never otherwise.
+
+const COMBINE_KINDS = {
+  pdf: 'pdf',
+  png: 'image',
+  jpg: 'image',
+  jpeg: 'image',
+  gif: 'image',
+  bmp: 'image',
+  webp: 'image',
+  tif: 'tiff',
+  tiff: 'tiff',
+};
+const COMBINE_MIME = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  webp: 'image/webp',
+};
+const COMBINE_FORMAT = {
+  png: 'PNG',
+  jpg: 'JPEG',
+  jpeg: 'JPEG',
+  gif: 'GIF',
+  bmp: 'BMP',
+  webp: 'WebP',
+  tif: 'TIFF',
+  tiff: 'TIFF',
+};
+// Longest side of an image page in pixels: the same ceiling pdf.js's own
+// Pages-panel merge applies. A 300 dpi letter scan (3300 px) fits under it.
+const COMBINE_MAX_SIDE = 4096;
+// Decoded bitmaps go to the worker a batch at a time so a long scan is never
+// held in memory all at once; each pass appends to the previous pass's
+// output. The budget is decoded RGBA bytes per pass.
+const COMBINE_PASS_BUDGET = 192 * 1024 * 1024;
+const COMBINE_THUMB = 128; // CSS px, longest side of a card thumbnail
+
+// items: { id, path, name, kind, ext, status: loading|ready|error, bytes,
+// pages, width, height, thumb (canvas), password, ifds, error, el }
+const combine = { items: [], busy: false, seq: 0, worker: null, el: null, addTile: null };
+
+// Programmatic entry point, in the spirit of window.nobloatBookmarks: opens
+// the screen and adds files by path. Nothing in the app calls it today.
+window.nobloatCombine = {
+  open: () => openCombine(),
+  addPaths: (paths) => {
+    openCombine();
+    addCombinePaths(paths);
+  },
+};
+
+function combineKind(path) {
+  const ext = path.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '';
+  return { kind: COMBINE_KINDS[ext] ?? null, ext };
+}
+
+function combineIsOpen() {
+  return !!combine.el && !combine.el.hidden;
+}
+
+async function readFileBytes(path) {
+  const res = await fetch(core.convertFileSrc(path));
+  if (!res.ok) throw new Error(`the file could not be read (${res.status})`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+// One worker for as long as the screen is open: pdf.js would otherwise start
+// a fresh worker, and load its script, for every file inspected.
+function combineWorker() {
+  const lib = globalThis.pdfjsLib;
+  // The viewer sets this lazily; the screen can be used before any document
+  // has been opened.
+  lib.GlobalWorkerOptions.workerSrc ||=
+    window.PDFViewerApplicationOptions?.get('workerSrc') || '../build/pdf.worker.mjs';
+  return (combine.worker ??= new lib.PDFWorker({ name: 'nobloat-combine' }));
+}
+
+let tiffLibPromise = null;
+function loadTiffLib() {
+  return (tiffLibPromise ??= new Promise((resolve, reject) => {
+    const fail = () => {
+      tiffLibPromise = null;
+      reject(new Error('the TIFF decoder could not be loaded'));
+    };
+    const script = document.createElement('script');
+    script.src = 'tiff.js';
+    script.onload = () => (window.UTIF ? resolve(window.UTIF) : fail());
+    script.onerror = fail;
+    document.head.append(script);
+  }));
+}
+
+// Page IFDs only: thumbnails and sub-IFDs carry no dimensions of their own.
+function tiffPages(UTIF, bytes) {
+  return UTIF.decode(bytes.buffer).filter((ifd) => ifd.t256?.[0] > 0 && ifd.t257?.[0] > 0);
+}
+
+// Decodes one page of an item at full size. The caller owns the bitmap.
+async function decodeImagePage(item, pageIndex) {
+  if (item.kind === 'tiff') {
+    const UTIF = await loadTiffLib();
+    item.ifds ??= tiffPages(UTIF, item.bytes);
+    const ifd = item.ifds[pageIndex];
+    UTIF.decodeImage(item.bytes.buffer, ifd);
+    const rgba = UTIF.toRGBA8(ifd);
+    delete ifd.data; // the decoded strips; the RGBA copy is all that is needed
+    const image = new ImageData(
+      new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.length),
+      ifd.width,
+      ifd.height
+    );
+    return createImageBitmap(image);
+  }
+  return createImageBitmap(new Blob([item.bytes], { type: COMBINE_MIME[item.ext] }));
+}
+
+// Shrinks a bitmap so its longest side is at most maxSide, closing the input
+// when a new one is made. Drawn through a canvas rather than
+// createImageBitmap's resize options, which older WebKit lacks.
+async function boundBitmap(bitmap, maxSide) {
+  const s = maxSide / Math.max(bitmap.width, bitmap.height);
+  if (s >= 1) return bitmap;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * s));
+  canvas.height = Math.max(1, Math.round(bitmap.height * s));
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return createImageBitmap(canvas);
+}
+
+// Password prompt for protected PDFs added to the screen. The password is
+// kept on the item and handed to the worker again when combining.
+let passwordDialog = null;
+function askPassword(name, retry) {
+  return new Promise((resolve) => {
+    if (!passwordDialog) {
+      passwordDialog = createModal('nbPasswordDialog');
+      passwordDialog.innerHTML = `
+        <form method="dialog" class="nb-password-box">
+          <h2>Password required</h2>
+          <p></p>
+          <input type="password" autocomplete="off" aria-label="Password" />
+          <div class="nb-modal-footer">
+            <button type="button" class="nb-btn-quiet">Cancel</button>
+            <button type="submit" value="ok">OK</button>
+          </div>
+        </form>`;
+      passwordDialog.querySelector('.nb-btn-quiet').addEventListener('click', () => passwordDialog.close(''));
+    }
+    const input = passwordDialog.querySelector('input');
+    passwordDialog.querySelector('p').textContent = retry
+      ? `That password did not open "${name}". Try again?`
+      : `"${name}" is password protected. Enter its password to combine it.`;
+    input.value = '';
+    passwordDialog.returnValue = '';
+    passwordDialog.addEventListener(
+      'close',
+      () => resolve(passwordDialog.returnValue === 'ok' ? input.value : null),
+      { once: true }
+    );
+    passwordDialog.showModal();
+    input.focus();
+  });
+}
+
+async function openPdfForInspection(item) {
+  for (;;) {
+    // pdf.js transfers `data` to the worker, so it gets its own copy.
+    const task = globalThis.pdfjsLib.getDocument({
+      data: item.bytes.slice(),
+      worker: combineWorker(),
+      password: item.password,
+    });
+    try {
+      await task.promise;
+      return task; // the task owns the document; destroy() lives on it
+    } catch (err) {
+      await task.destroy().catch(() => {});
+      if (err?.name !== 'PasswordException') throw err;
+      const password = await askPassword(item.name, item.password !== undefined);
+      if (password === null) throw new Error('it is password protected');
+      item.password = password;
+    }
+  }
+}
+
+async function inspectItem(item) {
+  item.bytes = await readFileBytes(item.path);
+  const dpr = window.devicePixelRatio || 1;
+  if (item.kind === 'pdf') {
+    const task = await openPdfForInspection(item);
+    const doc = await task.promise;
+    try {
+      item.pages = doc.numPages;
+      const page = await doc.getPage(1);
+      const base = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({
+        scale: (COMBINE_THUMB * dpr) / Math.max(base.width, base.height),
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      item.thumb = canvas;
+    } finally {
+      await task.destroy().catch(() => {});
+    }
+    return;
+  }
+  if (item.kind === 'tiff') {
+    item.ifds = tiffPages(await loadTiffLib(), item.bytes);
+    if (!item.ifds.length) throw new Error('no image pages were found in it');
+    item.pages = item.ifds.length;
+  } else {
+    item.pages = 1;
+  }
+  const full = await decodeImagePage(item, 0);
+  item.width = full.width;
+  item.height = full.height;
+  const small = await boundBitmap(full, COMBINE_THUMB * dpr);
+  const canvas = document.createElement('canvas');
+  canvas.width = small.width;
+  canvas.height = small.height;
+  canvas.getContext('2d').drawImage(small, 0, 0);
+  small.close();
+  item.thumb = canvas;
+}
+
+function combineErrorText(err) {
+  const text = String(err?.message ?? err ?? '').trim();
+  if (!text) return 'it could not be read';
+  if (/^InvalidPDFException|Invalid PDF structure/i.test(text)) return 'it is not a valid PDF';
+  if (err?.name === 'InvalidStateError' || /decod/i.test(text)) return 'the image could not be decoded';
+  return text.replace(/\.$/, '');
+}
+
+function addCombinePaths(paths) {
+  const accepted = [];
+  let skipped = 0;
+  for (const path of paths ?? []) {
+    if (typeof path !== 'string') continue;
+    const { kind, ext } = combineKind(path);
+    if (!kind) {
+      skipped++;
+      continue;
+    }
+    accepted.push({
+      id: ++combine.seq,
+      path,
+      name: baseName(path),
+      kind,
+      ext,
+      status: 'loading',
+      pages: 0,
+    });
+  }
+  if (skipped) {
+    showToast(
+      skipped === 1
+        ? 'Skipped 1 file that is not a PDF or image'
+        : `Skipped ${skipped} files that are not PDFs or images`
+    );
+  }
+  if (!accepted.length) return;
+  for (const item of accepted) {
+    item.el = buildCombineCard(item);
+    combine.items.push(item);
+  }
+  renderCombineList();
+  // One file at a time: they are already in order, and a dozen decodes in
+  // parallel would only fight over memory.
+  (async () => {
+    for (const item of accepted) {
+      if (!combine.items.includes(item)) continue; // removed while waiting
+      try {
+        await inspectItem(item);
+        item.status = 'ready';
+      } catch (err) {
+        console.error('No Bloat PDF: could not add', item.path, err);
+        item.status = 'error';
+        item.error = combineErrorText(err);
+        item.bytes = null;
+      }
+      updateCombineCard(item);
+      updateCombineStatus();
+    }
+  })();
+}
+
+function removeCombineItem(item) {
+  const idx = combine.items.indexOf(item);
+  if (idx === -1 || combine.busy) return;
+  combine.items.splice(idx, 1);
+  item.bytes = null;
+  renderCombineList();
+  // Keep the keyboard on the list: the neighbour that slid into the slot.
+  const next = combine.items[Math.min(idx, combine.items.length - 1)];
+  (next?.el ?? combine.el.querySelector('.nb-combine-add, .nb-combine-empty button'))?.focus();
+}
+
+// `pinned` is a card that must stay in the DOM while the list is reordered
+// (the one under pointer capture during a drag).
+function moveCombineItem(item, to, pinned = null) {
+  const from = combine.items.indexOf(item);
+  if (from === -1 || to < 0 || to >= combine.items.length || to === from) return;
+  combine.items.splice(from, 1);
+  combine.items.splice(to, 0, item);
+  renderCombineList(pinned);
+}
+
+async function pickCombineFiles() {
+  const images = Object.keys(COMBINE_KINDS).filter((e) => e !== 'pdf');
+  const picked = await window.__TAURI__.dialog.open({
+    multiple: true,
+    directory: false,
+    filters: [
+      { name: 'PDFs and images', extensions: Object.keys(COMBINE_KINDS) },
+      { name: 'PDF', extensions: ['pdf'] },
+      { name: 'Images', extensions: images },
+    ],
+  });
+  if (!picked) return;
+  addCombinePaths(Array.isArray(picked) ? picked : [picked]);
+}
+
+// --- Screen -----------------------------------------------------------------
+
+function ensureCombineScreen() {
+  if (combine.el) return combine.el;
+  const el = document.createElement('div');
+  el.id = 'nobloatCombine';
+  el.hidden = true;
+  el.innerHTML = `
+    <div class="nb-combine-head">
+      <h2>Combine Files</h2>
+      <p>Drop PDFs and images here, put them in order, and combine them into one new PDF. Nothing leaves your computer.</p>
+    </div>
+    <div class="nb-combine-list" role="list" aria-label="Files to combine"></div>
+    <div class="nb-combine-foot">
+      <span class="nb-spinner" hidden></span>
+      <span class="nb-combine-status" aria-live="polite"></span>
+      <button type="button" class="nb-btn" data-act="cancel">Cancel</button>
+      <button type="button" class="nb-btn" data-act="add">Add files…</button>
+      <button type="button" class="nb-btn nb-btn-primary" data-act="combine">Combine</button>
+    </div>
+    <div class="nb-combine-veil"><span>Drop to add</span></div>`;
+  el.querySelector('[data-act="cancel"]').addEventListener('click', closeCombine);
+  el.querySelector('[data-act="add"]').addEventListener('click', pickCombineFiles);
+  el.querySelector('[data-act="combine"]').addEventListener('click', () => runCombine());
+  el.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && combine.items.length === 0 && !combine.busy) {
+      ev.preventDefault();
+      closeCombine();
+    }
+  });
+  document.getElementById('mainContainer')?.append(el);
+  combine.el = el;
+  renderCombineList();
+  return el;
+}
+
+function openCombine() {
+  const el = ensureCombineScreen();
+  el.hidden = false;
+  updateCombineStatus();
+  el.querySelector('.nb-combine-empty button, [data-act="add"]')?.focus();
+}
+
+function closeCombine() {
+  if (!combine.el || combine.busy) return;
+  combine.el.hidden = true;
+  combine.el.classList.remove('nb-dragover');
+  for (const item of combine.items) item.bytes = null;
+  combine.items = [];
+  renderCombineList();
+  combine.worker?.destroy();
+  combine.worker = null;
+}
+
+// Native drag feedback: Tauri reports enter/over/leave/drop for OS drags.
+function combineDragFeedback(type) {
+  combine.el?.classList.toggle('nb-dragover', type === 'enter' || type === 'over');
+}
+
+function buildCombineCard(item) {
+  const card = document.createElement('div');
+  card.className = 'nb-combine-card';
+  card.tabIndex = 0;
+  card.setAttribute('role', 'listitem');
+  card.title = item.path;
+  card.innerHTML = `
+    <span class="nb-combine-index"></span>
+    <button type="button" class="nb-combine-remove" aria-label="Remove">×</button>
+    <div class="nb-combine-thumb"><span class="nb-spinner"></span></div>
+    <div class="nb-combine-name"></div>
+    <div class="nb-combine-meta">Loading…</div>`;
+  card.querySelector('.nb-combine-name').textContent = item.name;
+  card.querySelector('.nb-combine-remove').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    removeCombineItem(item);
+  });
+  card.addEventListener('keydown', (ev) => {
+    if (ev.target !== card) return;
+    const idx = combine.items.indexOf(item);
+    let handled = true;
+    if (ev.key === 'Delete' || ev.key === 'Backspace') removeCombineItem(item);
+    else if (ev.altKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp')) {
+      moveCombineItem(item, idx - 1);
+      card.focus();
+    } else if (ev.altKey && (ev.key === 'ArrowRight' || ev.key === 'ArrowDown')) {
+      moveCombineItem(item, idx + 1);
+      card.focus();
+    } else if (ev.key === 'ArrowLeft') combine.items[idx - 1]?.el.focus();
+    else if (ev.key === 'ArrowRight') combine.items[idx + 1]?.el.focus();
+    else handled = false;
+    if (handled) ev.preventDefault();
+  });
+  attachCardDrag(card, item);
+  return card;
+}
+
+function combineMetaText(item) {
+  const pages = item.pages === 1 ? '1 page' : `${item.pages} pages`;
+  if (item.kind === 'pdf') return pages;
+  const format = COMBINE_FORMAT[item.ext];
+  return item.kind === 'tiff' ? `${format} · ${pages}` : `${format} · ${item.width} × ${item.height}`;
+}
+
+function updateCombineCard(item) {
+  const card = item.el;
+  const thumb = card.querySelector('.nb-combine-thumb');
+  const meta = card.querySelector('.nb-combine-meta');
+  card.classList.toggle('nb-error', item.status === 'error');
+  if (item.status === 'ready') {
+    thumb.replaceChildren(item.thumb);
+    meta.textContent = combineMetaText(item);
+    card.title = item.path;
+  } else if (item.status === 'error') {
+    const mark = document.createElement('span');
+    mark.className = 'nb-combine-errmark';
+    mark.textContent = '!';
+    thumb.replaceChildren(mark);
+    meta.textContent = `Can't be combined: ${item.error}`;
+    card.title = `${item.path}\nCan't be combined: ${item.error}`;
+  }
+}
+
+// Rebuilds the list from combine.items. A `pinned` card is never detached:
+// removing an element from the document releases its pointer capture, which
+// would end a drag on the first swap, so everything else moves around it.
+function renderCombineList(pinned = null) {
+  const list = combine.el?.querySelector('.nb-combine-list');
+  if (!list) return;
+  if (combine.items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'nb-combine-empty';
+    empty.innerHTML = `
+      <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="currentColor" d="M14 4a4 4 0 0 0-4 4v32a4 4 0 0 0 4 4h20a4 4 0 0 0 4-4V16L26 4H14zm11 3.5L34.5 17H27a2 2 0 0 1-2-2V7.5zM13 8a1 1 0 0 1 1-1h8v8a5 5 0 0 0 5 5h8v20a1 1 0 0 1-1 1H14a1 1 0 0 1-1-1V8zm11 15a1.5 1.5 0 0 1 1.5 1.5V31l2.44-2.44a1.5 1.5 0 1 1 2.12 2.12l-5 5a1.5 1.5 0 0 1-2.12 0l-5-5a1.5 1.5 0 1 1 2.12-2.12L22.5 31v-6.5A1.5 1.5 0 0 1 24 23z"/></svg>
+      <div class="nb-combine-empty-title">Drop PDFs and images here</div>
+      <div class="nb-combine-empty-hint">PDF, PNG, JPEG, TIFF, GIF, BMP, WebP. Pages come out in the order you arrange the files.</div>
+      <button type="button" class="nb-btn nb-btn-primary">Choose files…</button>`;
+    empty.querySelector('button').addEventListener('click', pickCombineFiles);
+    list.replaceChildren(empty);
+  } else {
+    if (!combine.addTile) {
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'nb-combine-add';
+      add.innerHTML = '<span class="nb-combine-add-plus">+</span><span>Add files…</span>';
+      add.addEventListener('click', pickCombineFiles);
+      combine.addTile = add;
+    }
+    const add = combine.addTile;
+    const pin = pinned && pinned.parentElement === list ? combine.items.findIndex((i) => i.el === pinned) : -1;
+    if (pin === -1) {
+      list.replaceChildren(...combine.items.map((item) => item.el), add);
+    } else {
+      for (const item of combine.items.slice(0, pin)) list.insertBefore(item.el, pinned);
+      if (add.parentElement !== list) list.append(add);
+      for (const item of combine.items.slice(pin + 1)) list.insertBefore(item.el, add);
+    }
+    combine.items.forEach((item, i) => {
+      item.el.querySelector('.nb-combine-index').textContent = String(i + 1);
+    });
+  }
+  updateCombineStatus();
+}
+
+function updateCombineStatus() {
+  const el = combine.el;
+  if (!el) return;
+  const items = combine.items;
+  const ready = items.filter((i) => i.status === 'ready');
+  const loading = items.filter((i) => i.status === 'loading').length;
+  const errors = items.length - ready.length - loading;
+  if (!combine.busy) {
+    const pages = ready.reduce((n, i) => n + i.pages, 0);
+    const parts = [];
+    if (items.length) {
+      parts.push(items.length === 1 ? '1 file' : `${items.length} files`);
+      parts.push(pages === 1 ? '1 page' : `${pages} pages`);
+    }
+    if (errors) parts.push(errors === 1 ? "1 can't be combined" : `${errors} can't be combined`);
+    if (loading) parts.push('loading…');
+    el.querySelector('.nb-combine-status').textContent = parts.join(' · ');
+  }
+  el.querySelector('[data-act="combine"]').disabled = combine.busy || loading > 0 || ready.length === 0;
+  el.querySelector('[data-act="add"]').disabled = combine.busy;
+  el.querySelector('[data-act="cancel"]').disabled = combine.busy;
+}
+
+function setCombineBusy(busy, text) {
+  combine.busy = busy;
+  combine.el.classList.toggle('nb-busy', busy);
+  combine.el.querySelector('.nb-combine-foot .nb-spinner').hidden = !busy;
+  if (text !== undefined) combine.el.querySelector('.nb-combine-status').textContent = text;
+  updateCombineStatus();
+}
+
+// Drag to reorder, on pointer events rather than HTML5 drag and drop, which
+// Tauri's native drop handling swallows on Windows. The card follows the
+// pointer; whenever the pointer is over another card the two trade places.
+// Cards are all one size, so a swap never shifts the card under the pointer
+// and the order cannot flap.
+function attachCardDrag(card, item) {
+  card.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0 || combine.busy || ev.target.closest('button')) return;
+    const list = card.parentElement;
+    const start = { x: ev.clientX, y: ev.clientY };
+    const rect = card.getBoundingClientRect();
+    const grab = { x: start.x - rect.left, y: start.y - rect.top };
+    let dragging = false;
+    const place = (x, y) => {
+      const listRect = list.getBoundingClientRect();
+      const baseX = listRect.left + card.offsetLeft - list.scrollLeft;
+      const baseY = listRect.top + card.offsetTop - list.scrollTop;
+      card.style.transform = `translate(${x - grab.x - baseX}px, ${y - grab.y - baseY}px)`;
+    };
+    const move = (e) => {
+      if (!dragging) {
+        if (Math.hypot(e.clientX - start.x, e.clientY - start.y) < 5) return;
+        dragging = true;
+        card.classList.add('nb-dragging');
+        card.setPointerCapture(ev.pointerId);
+      }
+      const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('.nb-combine-card');
+      if (over && over !== card) {
+        const to = combine.items.findIndex((i) => i.el === over);
+        if (to !== -1) moveCombineItem(item, to, card);
+      }
+      place(e.clientX, e.clientY);
+    };
+    const end = () => {
+      card.removeEventListener('pointermove', move);
+      card.removeEventListener('pointerup', end);
+      card.removeEventListener('pointercancel', end);
+      if (!dragging) return;
+      card.classList.remove('nb-dragging');
+      card.style.transform = '';
+      card.focus();
+    };
+    card.addEventListener('pointermove', move);
+    card.addEventListener('pointerup', end);
+    card.addEventListener('pointercancel', end);
+  });
+}
+
+// --- Building the PDF -------------------------------------------------------
+
+// The host document for the extractor: one blank letter page, never copied.
+function blankPdfBytes() {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>',
+  ];
+  let out = '%PDF-1.4\n';
+  const offsets = [];
+  objects.forEach((body, i) => {
+    offsets.push(out.length);
+    out += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) out += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(out); // ASCII only, so offsets are byte offsets
+}
+
+function combineDefaultPath(firstPath) {
+  const cut = Math.max(firstPath.lastIndexOf('\\'), firstPath.lastIndexOf('/'));
+  if (cut === -1) return 'Combined.pdf';
+  return `${firstPath.slice(0, cut + 1)}Combined.pdf`;
+}
+
+// `target`: write there without asking (the command-line flow); otherwise
+// the Save dialog decides.
+async function runCombine({ target: preset = null } = {}) {
+  const ready = combine.items.filter((i) => i.status === 'ready');
+  if (combine.busy || ready.length === 0) return;
+  // Units of work in output order: a PDF is one unit, an image page is one
+  // unit. Weights are the bytes the worker has to take in for the unit.
+  const units = [];
+  for (const item of ready) {
+    if (item.kind === 'pdf') {
+      units.push({
+        pages: item.pages,
+        weight: item.bytes.length,
+        make: async () => ({ document: item.bytes, password: item.password }),
+      });
+      continue;
+    }
+    const shrink = Math.min(1, COMBINE_MAX_SIDE / Math.max(item.width, item.height));
+    const weight = Math.ceil(item.width * shrink) * Math.ceil(item.height * shrink) * 4;
+    for (let p = 0; p < item.pages; p++) {
+      units.push({
+        pages: 1,
+        weight,
+        make: async () => ({
+          image: await boundBitmap(await decodeImagePage(item, p), COMBINE_MAX_SIDE),
+          nobloatFit: true,
+        }),
+      });
+    }
+  }
+  const total = units.reduce((n, u) => n + u.pages, 0);
+  setCombineBusy(true, 'Combining…');
+  let hostTask = null;
+  let output = null;
+  try {
+    hostTask = globalThis.pdfjsLib.getDocument({ data: blankPdfBytes(), worker: combineWorker() });
+    const host = await hostTask.promise;
+    let done = 0;
+    for (let i = 0; i < units.length; ) {
+      const entries = output ? [{ document: output }] : [];
+      let weight = 0;
+      do {
+        const unit = units[i++];
+        entries.push(await unit.make());
+        weight += unit.weight;
+        done += unit.pages;
+      } while (i < units.length && weight + units[i].weight <= COMBINE_PASS_BUDGET);
+      output = await host.extractPages(entries);
+      if (!output) throw new Error('The combined PDF could not be written.');
+      setCombineBusy(true, `Combining… ${done} of ${total} pages`);
+    }
+  } catch (err) {
+    console.error('No Bloat PDF: combine failed', err);
+    window.__TAURI__.dialog
+      .message(`Couldn't combine the files.\n\n${err?.message ?? err}`, {
+        title: 'No Bloat PDF',
+        kind: 'error',
+      })
+      .catch(() => {});
+    setCombineBusy(false);
+    return;
+  } finally {
+    await hostTask?.destroy().catch(() => {});
+  }
+  setCombineBusy(true, preset ? 'Saving…' : 'Choose where to save…');
+  let target = preset;
+  try {
+    target ??= await window.__TAURI__.dialog.save({
+      defaultPath: combineDefaultPath(ready[0].path),
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (!target) return; // cancelled: the list stays for another try
+    await writePdfBytes(target, output);
+  } catch (err) {
+    console.error('No Bloat PDF: could not save the combined PDF', err);
+    window.__TAURI__.dialog
+      .message(`Couldn't save the PDF.\n\n${err?.message ?? err}`, {
+        title: 'No Bloat PDF',
+        kind: 'error',
+      })
+      .catch(() => {});
+    return;
+  } finally {
+    setCombineBusy(false);
+  }
+  showToast(`Saved ${baseName(target)}`);
+  closeCombine();
+  openPaths([target]);
+}
+
+// Command line: `--combine <out.pdf> <files…>` (cold start via the
+// combine_request command, warm start via the combine-files event). Shows
+// the screen with the files, waits for them to load, and writes the result
+// to <out.pdf> without asking. The macOS CI smoke test drives this.
+async function combineFromCommandLine(out, paths) {
+  if (typeof out !== 'string' || !out) return;
+  openCombine();
+  addCombinePaths(paths);
+  while (combine.items.some((i) => i.status === 'loading')) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  await runCombine({ target: out });
+}
 
 // ---------------------------------------------------------------------------
 // Page editing (Pages panel)
@@ -915,6 +1642,7 @@ function fileMenuItems() {
   const hasDoc = !!activeTab();
   return [
     { label: 'Open…', shortcut: shortcutLabel('Ctrl+O'), action: pickAndOpen },
+    { label: 'Combine Files…', action: openCombine },
     { type: 'separator' },
     { label: 'Save', shortcut: shortcutLabel('Ctrl+S'), enabled: hasDoc, action: saveActiveTab },
     {
@@ -1100,7 +1828,7 @@ function showLicenseDialog() {
     const credits = document.createElement('p');
     credits.className = 'nb-license-credits';
     credits.textContent =
-      'Rendering by Mozilla pdf.js (Apache License 2.0) · App shell by Tauri (MIT / Apache License 2.0)';
+      'Rendering by Mozilla pdf.js (Apache License 2.0) · App shell by Tauri (MIT / Apache License 2.0) · TIFF decoding by UTIF.js and tiny-inflate (MIT, see LICENSE.tiff.txt)';
     const pre = document.createElement('pre');
     pre.className = 'nb-license-text';
     pre.textContent = 'Loading…';
@@ -1307,7 +2035,22 @@ window.addEventListener('DOMContentLoaded', () => {
     const hint = document.createElement('div');
     hint.className = 'nb-hint';
     hint.textContent = `Drop a PDF here, or press ${shortcutLabel('Ctrl+O')} to open`;
-    empty.append(img, title, hint);
+    // The empty state lets pointer events through so drops reach the viewer;
+    // the buttons opt back in.
+    const actions = document.createElement('div');
+    actions.className = 'nb-empty-actions';
+    for (const [text, action] of [
+      ['Open PDF…', pickAndOpen],
+      ['Combine Files…', openCombine],
+    ]) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'nb-btn';
+      btn.textContent = text;
+      btn.addEventListener('click', action);
+      actions.append(btn);
+    }
+    empty.append(img, title, hint, actions);
     mainContainer.append(empty);
   }
 
@@ -1392,15 +2135,25 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Warm start: Rust forwards paths from a second app instance.
   tauriEvent.listen('open-file', (e) => openPaths(e.payload));
+  tauriEvent.listen('combine-files', (e) => combineFromCommandLine(e.payload?.out, e.payload?.paths));
 
   // Native drag-and-drop delivers OS paths; the viewer's HTML5 drop handler
   // never fires on Windows while Tauri's dragDropEnabled (default) is on.
   webview.getCurrentWebview().onDragDropEvent((e) => {
-    if (e.payload.type === 'drop') openPaths(e.payload.paths);
+    const { type } = e.payload;
+    if (combineIsOpen()) {
+      combineDragFeedback(type);
+      if (type === 'drop' && !combine.busy) addCombinePaths(e.payload.paths);
+      return;
+    }
+    if (type === 'drop') openPaths(e.payload.paths);
   });
 
-  // Cold start: drain paths buffered from argv (Windows) / RunEvent::Opened (macOS).
-  core.invoke('pending_files').then(openPaths).catch(() => {});
+  // Cold start: drain paths buffered from argv (Windows) / RunEvent::Opened
+  // (macOS). A `--combine <out.pdf>` flag sends them to Combine Files instead.
+  Promise.all([core.invoke('combine_request'), core.invoke('pending_files')])
+    .then(([out, paths]) => (out ? combineFromCommandLine(out, paths) : openPaths(paths)))
+    .catch(() => {});
 
   // Replace the viewer's HTML5 <input type=file> open flow with the native
   // dialog so we always work with real filesystem paths.

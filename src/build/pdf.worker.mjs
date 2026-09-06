@@ -62119,7 +62119,8 @@ class PDFEditor {
         reservePageSlot(newPageIndex);
         imageEntries.push({
           image,
-          slot: newPageIndex
+          slot: newPageIndex,
+          fit: pageInfo.nobloatFit === true
         });
         continue;
       }
@@ -62185,7 +62186,7 @@ class PDFEditor {
     for (let i = 0, ii = this.oldPages.length; i < ii; i++) {
       const imageEntry = imageSlots.get(i);
       if (imageEntry) {
-        this.newPages[i] = await this.#makeImagePage(imageEntry.image, modalPageSize);
+        this.newPages[i] = await this.#makeImagePage(imageEntry.image, modalPageSize, imageEntry.fit);
       } else {
         this.newPages[i] = await this.#makePageCopy(i, null);
       }
@@ -63324,15 +63325,12 @@ class PDFEditor {
       height: best.height
     };
   }
-  async #makeImagePage(bitmap, pageSize) {
-    const {
+  async #makeImagePage(bitmap, pageSize, fit = false) {
+    let {
       width: pageW,
       height: pageH
     } = pageSize;
     const DEFAULT_MARGIN_RATIO = 0.1;
-    const margin = pageW * DEFAULT_MARGIN_RATIO;
-    const availW = Math.max(1, pageW - 2 * margin);
-    const availH = Math.max(1, pageH - 2 * margin);
     const lastRef = this.newRefCount;
     const {
       imageStream,
@@ -63342,9 +63340,23 @@ class PDFEditor {
     } = await createImage(bitmap, this.xrefWrapper, {
       closeBitmap: true
     });
+    // nobloat fit (image entries flagged nobloatFit, used by Combine Files):
+    // the page takes the image's orientation and is then cut down to the
+    // drawn image, so a scanned page fills its page edge to edge instead of
+    // floating inside the 10% margin the Pages-panel merge uses.
+    if (fit && imgW > imgH !== pageW > pageH) {
+      [pageW, pageH] = [pageH, pageW];
+    }
+    const margin = fit ? 0 : pageW * DEFAULT_MARGIN_RATIO;
+    const availW = Math.max(1, pageW - 2 * margin);
+    const availH = Math.max(1, pageH - 2 * margin);
     const scale = Math.min(availW / imgW, availH / imgH);
     const drawW = imgW * scale;
     const drawH = imgH * scale;
+    if (fit) {
+      pageW = drawW;
+      pageH = drawH;
+    }
     const tx = (pageW - drawW) / 2;
     const ty = (pageH - drawH) / 2;
     if (smaskStream) {

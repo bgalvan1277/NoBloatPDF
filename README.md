@@ -21,6 +21,8 @@ small, instant, quiet, and free forever. The longer version is on the
 - Tabs for multiple documents in one window (Ctrl+Tab / Ctrl+W)
 - Full text search, thumbnails, bookmarks, outline, zoom, rotate
 - Delete, reorder, and export pages from the Pages panel, with undo
+- Combines PDFs and images (PNG, JPEG, TIFF, GIF, BMP, WebP) into one new PDF, in the order you arrange them
+  (also from the command line: `no-bloat-pdf --combine out.pdf a.pdf b.png c.tif`)
 - Highlighting, text notes, freehand drawing, stamps, and signatures
 - Fills standard PDF forms and saves locally
 - High-resolution printing, dark mode, remembers your place in every file
@@ -37,7 +39,10 @@ is not. Staying a viewer is how it stays 4.6 MB and instant.
 - [Tauri v2](https://tauri.app): a small native shell instead of a bundled
   browser, in `src-tauri/`
 - The only custom frontend glue is `src/web/nobloat.js` (tabs, file opening,
-  drag and drop, branding) plus the About window in `src/about.html`
+  drag and drop, Combine Files, branding); `src/web/tiff.js` is
+  [UTIF.js](https://github.com/photopea/UTIF.js) plus
+  [tiny-inflate](https://github.com/foliojs/tiny-inflate) (both MIT), loaded
+  only when a TIFF is combined
 - The website lives in `website/` and is plain HTML/CSS with SSI partials
 
 ## Building from source

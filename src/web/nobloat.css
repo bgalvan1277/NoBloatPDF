@@ -791,3 +791,391 @@ body[data-pdfjsprinting] {
   border-radius: 3px;
   padding: 1px 4px;
 }
+
+/* --- Shared buttons ---------------------------------------------------------
+   Used by the empty state, the Combine Files screen, and the password
+   prompt. */
+.nb-btn {
+  border: 1px solid light-dark(rgb(0 0 0 / 0.22), rgb(255 255 255 / 0.22));
+  border-radius: 6px;
+  padding: 7px 16px;
+  font: 13px system-ui, sans-serif;
+  font-weight: 600;
+  background: light-dark(#fff, rgb(64 64 70));
+  color: light-dark(rgb(12 12 13), rgb(249 249 250));
+  cursor: pointer;
+}
+
+.nb-btn:not(:disabled):hover {
+  background: light-dark(#eef0f7, rgb(80 80 88));
+}
+
+.nb-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nb-btn-primary,
+.nb-btn-primary:not(:disabled):hover {
+  border-color: transparent;
+  color: #fff;
+}
+
+.nb-btn-primary {
+  background: var(--nb-primary);
+}
+
+.nb-btn-primary:not(:disabled):hover {
+  background: var(--nb-primary-dark);
+}
+
+/* Empty-state buttons: the state itself is pointer-events: none. */
+.nb-empty-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+  pointer-events: auto;
+}
+
+@keyframes nb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.nb-spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 3px solid rgb(128 128 128 / 0.3);
+  border-top-color: var(--nb-primary);
+  border-radius: 50%;
+  animation: nb-spin 0.8s linear infinite;
+}
+
+.nb-spinner[hidden] {
+  display: none;
+}
+
+/* --- Combine Files screen ---------------------------------------------------
+   Covers #mainContainer (toolbar, sidebar, and viewer) while open; the menu
+   bar and tabs above stay usable. Injected by nobloat.js. */
+#nobloatCombine {
+  position: absolute;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  background: light-dark(#f2f3f8, rgb(31 31 36));
+  color: light-dark(rgb(12 12 13), rgb(249 249 250));
+  font: 13px system-ui, sans-serif;
+}
+
+#nobloatCombine[hidden] {
+  display: none;
+}
+
+.nb-combine-head {
+  padding: 22px 28px 6px;
+}
+
+.nb-combine-head h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.nb-combine-head p {
+  margin: 0;
+  opacity: 0.72;
+}
+
+.nb-combine-list {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 28px 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 150px);
+  gap: 14px;
+  align-content: start;
+}
+
+.nb-combine-card,
+.nb-combine-add {
+  box-sizing: border-box;
+  width: 150px;
+  height: 212px;
+  border-radius: 10px;
+}
+
+.nb-combine-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+  background: light-dark(#fff, rgb(44 44 50));
+  border: 1px solid light-dark(rgb(0 0 0 / 0.1), rgb(255 255 255 / 0.1));
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.nb-combine-card:focus-visible {
+  outline: 2px solid var(--nb-primary);
+  outline-offset: 1px;
+}
+
+.nb-combine-card.nb-dragging {
+  z-index: 2;
+  cursor: grabbing;
+  pointer-events: none;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.3);
+  opacity: 0.92;
+}
+
+.nb-combine-card.nb-error {
+  border-color: light-dark(#d33, #f66);
+}
+
+.nb-combine-thumb {
+  flex: 0 0 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  overflow: hidden;
+  background: light-dark(#e9ebf3, rgb(27 27 32));
+}
+
+.nb-combine-thumb canvas {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+  pointer-events: none;
+}
+
+.nb-combine-errmark {
+  width: 32px;
+  height: 32px;
+  line-height: 32px;
+  text-align: center;
+  border-radius: 50%;
+  background: light-dark(#d33, #f66);
+  color: #fff;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.nb-combine-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nb-combine-meta {
+  font-size: 11px;
+  opacity: 0.65;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nb-error .nb-combine-meta {
+  opacity: 1;
+  color: light-dark(#c22, #f88);
+}
+
+.nb-combine-index {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 1;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  background: var(--nb-primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+
+.nb-combine-remove {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgb(20 20 25 / 0.75);
+  color: #fff;
+  font-size: 15px;
+  line-height: 22px;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.nb-combine-card:hover .nb-combine-remove,
+.nb-combine-card:focus-within .nb-combine-remove {
+  opacity: 1;
+}
+
+.nb-combine-remove:hover {
+  background: #c22;
+}
+
+.nb-combine-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 2px dashed light-dark(rgb(0 0 0 / 0.25), rgb(255 255 255 / 0.25));
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.nb-combine-add:hover,
+.nb-combine-add:focus-visible {
+  opacity: 1;
+  border-color: var(--nb-primary);
+  color: light-dark(var(--nb-primary), var(--nb-secondary));
+}
+
+.nb-combine-add-plus {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.nb-combine-empty {
+  grid-column: 1 / -1;
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  border: 2px dashed light-dark(rgb(0 0 0 / 0.22), rgb(255 255 255 / 0.22));
+  border-radius: 12px;
+  text-align: center;
+}
+
+.nb-combine-empty svg {
+  width: 56px;
+  height: 56px;
+  opacity: 0.55;
+  margin-bottom: 4px;
+}
+
+.nb-combine-empty-title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.nb-combine-empty-hint {
+  opacity: 0.65;
+  margin-bottom: 8px;
+}
+
+.nb-combine-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 28px 16px;
+  border-top: 1px solid light-dark(rgb(0 0 0 / 0.1), rgb(255 255 255 / 0.1));
+}
+
+.nb-combine-status {
+  flex: 1 1 auto;
+  opacity: 0.75;
+}
+
+#nobloatCombine.nb-busy .nb-combine-list {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+/* Native drag over the window: the whole screen becomes the target. */
+.nb-combine-veil {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: rgb(24 0 173 / 0.1);
+  outline: 3px dashed var(--nb-primary);
+  outline-offset: -12px;
+  font-size: 22px;
+  font-weight: 600;
+  color: light-dark(var(--nb-primary), var(--nb-secondary));
+}
+
+#nobloatCombine.nb-dragover:not(.nb-busy) .nb-combine-veil {
+  display: flex;
+}
+
+/* Password prompt for protected PDFs on the Combine screen. */
+#nbPasswordDialog {
+  width: min(420px, 90vw);
+}
+
+.nb-password-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 20px 24px;
+  font: 13.5px/1.5 system-ui, sans-serif;
+}
+
+.nb-password-box h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.nb-password-box p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.nb-password-box input {
+  font: inherit;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: light-dark(rgb(12 12 13), rgb(249 249 250));
+  background: light-dark(#fff, rgb(64 64 68));
+  border: 1px solid light-dark(rgb(187 187 188), rgb(115 115 115));
+}
+
+.nb-modal-footer {
+  gap: 8px;
+}
+
+.nb-modal-footer button.nb-btn-quiet {
+  background: transparent;
+  color: inherit;
+  border: 1px solid light-dark(rgb(0 0 0 / 0.22), rgb(255 255 255 / 0.22));
+}
+
+.nb-modal-footer button.nb-btn-quiet:hover {
+  background: light-dark(rgb(0 0 0 / 0.06), rgb(255 255 255 / 0.08));
+}

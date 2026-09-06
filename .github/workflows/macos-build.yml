@@ -150,6 +150,32 @@ jobs:
           node scripts/check-smoke-screenshot.mjs shot-window.png 0.15 \
             || node scripts/check-smoke-screenshot.mjs shot-25s.png 0.15
 
+      # Combine Files, end to end, on real WebKit: relaunch the installed app
+      # with `--combine <out.pdf> <files…>` (a PDF, a PNG, and a two-page
+      # TIFF), wait for the atomically written output, and require the exact
+      # pages it must contain. Exercises the page extractor over documents
+      # and bitmaps, the in-app TIFF decoder, and the save path.
+      - name: Combine Files from the command line (PDF + PNG + TIFF)
+        run: |
+          pkill -x no-bloat-pdf || true
+          sleep 2
+          node scripts/make-combine-smoke-samples.cjs "$PWD/combine"
+          open -a "/Applications/No Bloat PDF.app" --args --combine "$PWD/combine/Combined.pdf" \
+            "$PWD/combine/Alpha report.pdf" "$PWD/combine/Photo landscape.png" "$PWD/combine/Scan two pages.tif"
+          for i in $(seq 1 30); do
+            [ -f combine/Combined.pdf ] && break
+            sleep 2
+          done
+          sleep 5
+          screencapture -x shot-combine.png
+          if WINDOW_ID="$(swift scripts/find-window-id.swift "No Bloat")"; then
+            screencapture -x -o -l "$WINDOW_ID" shot-combine-window.png || true
+          fi
+          pgrep -x no-bloat-pdf || { echo "app not running after combine"; exit 1; }
+          [ -f combine/Combined.pdf ] || { echo "Combined.pdf was not written"; exit 1; }
+          node scripts/check-combined-pdf.mjs combine/Combined.pdf \
+            '[[612,792],[612,792],[612,792],[792,528],[609,792],[609,792]]'
+
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4

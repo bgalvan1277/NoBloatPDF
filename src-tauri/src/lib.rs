@@ -5,32 +5,53 @@ use tauri::{Emitter, Manager};
 /// Windows/Linux, RunEvent::Opened on macOS). Drained once by `pending_files`.
 struct PendingFiles(Mutex<Vec<String>>);
 
-/// Extract file paths from a raw argument list. Skips the binary name and
-/// `-`-prefixed flags; the OS may hand us plain paths or `file://` URLs.
-fn paths_from_args<I>(args: I) -> Vec<String>
+/// Output path of a cold-start `--combine <out.pdf> <files…>` request. The
+/// files themselves travel through `PendingFiles`; the frontend asks for this
+/// first and, when it is set, sends them to Combine Files instead of opening
+/// them as tabs. Drained once by `combine_request`.
+struct CombineRequest(Mutex<Option<String>>);
+
+/// Splits a raw argument list into file paths and, when `--combine <out>` is
+/// present, the PDF those files should be combined into (parsed here so the
+/// output path is never mistaken for a file to open). Skips the binary name
+/// and any other `-`-prefixed flag; the OS may hand us plain paths or
+/// `file://` URLs.
+fn parse_args<I>(args: I) -> (Vec<String>, Option<String>)
 where
     I: IntoIterator<Item = String>,
 {
-    args.into_iter()
-        .skip(1)
-        .filter(|arg| !arg.starts_with('-'))
-        .map(|arg| {
-            match tauri::Url::parse(&arg) {
-                // Windows paths like C:\x.pdf parse as scheme "c" — only
-                // treat genuine file:// URLs as URLs.
-                Ok(url) if url.scheme() == "file" => url
-                    .to_file_path()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or(arg),
-                _ => arg,
-            }
-        })
-        .collect()
+    let mut paths = Vec::new();
+    let mut combine = None;
+    let mut args = args.into_iter().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--combine" {
+            combine = args.next();
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        paths.push(match tauri::Url::parse(&arg) {
+            // Windows paths like C:\x.pdf parse as scheme "c" — only
+            // treat genuine file:// URLs as URLs.
+            Ok(url) if url.scheme() == "file" => url
+                .to_file_path()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(arg),
+            _ => arg,
+        });
+    }
+    (paths, combine)
 }
 
 #[tauri::command]
 fn pending_files(state: tauri::State<PendingFiles>) -> Vec<String> {
     state.0.lock().unwrap().drain(..).collect()
+}
+
+#[tauri::command]
+fn combine_request(state: tauri::State<CombineRequest>) -> Option<String> {
+    state.0.lock().unwrap().take()
 }
 
 /// Writes the saved PDF bytes to disk. The bytes arrive as the raw invoke
@@ -66,6 +87,7 @@ fn save_pdf(request: tauri::ipc::Request<'_>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let (cold_paths, cold_combine) = parse_args(std::env::args());
     tauri::Builder::default()
         // Must be the first plugin registered (documented requirement).
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -73,8 +95,10 @@ pub fn run() {
                 let _ = win.unminimize();
                 let _ = win.set_focus();
             }
-            let paths = paths_from_args(argv.into_iter());
-            if !paths.is_empty() {
+            let (paths, combine) = parse_args(argv.into_iter());
+            if let Some(out) = combine {
+                let _ = app.emit("combine-files", serde_json::json!({ "out": out, "paths": paths }));
+            } else if !paths.is_empty() {
                 app.state::<PendingFiles>().0.lock().unwrap().extend(paths.clone());
                 let _ = app.emit("open-file", paths);
             }
@@ -99,14 +123,19 @@ pub fn run() {
             tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
                 .on_navigation(|url| {
                     // tauri://localhost on macOS/Linux, http://tauri.localhost
-                    // on Windows.
-                    url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost")
+                    // on Windows. `tauri dev` serves the frontend from a local
+                    // HTTP server instead, which only debug builds may load.
+                    url.scheme() == "tauri"
+                        || url.host_str() == Some("tauri.localhost")
+                        || (cfg!(debug_assertions)
+                            && matches!(url.host_str(), Some("127.0.0.1" | "localhost")))
                 })
                 .build()?;
             Ok(())
         })
-        .manage(PendingFiles(Mutex::new(paths_from_args(std::env::args()))))
-        .invoke_handler(tauri::generate_handler![pending_files, save_pdf])
+        .manage(PendingFiles(Mutex::new(cold_paths)))
+        .manage(CombineRequest(Mutex::new(cold_combine)))
+        .invoke_handler(tauri::generate_handler![pending_files, save_pdf, combine_request])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
