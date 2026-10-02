@@ -611,6 +611,28 @@ window.nobloatSaveFile = async function (data, suggestedName) {
   return true;
 };
 
+// viewer.mjs calls this when a save could not even be built (pdf.js failed to
+// produce the bytes), as opposed to a failed write, which nobloatSaveFile
+// reports itself. Nothing was written and the edits are still in the viewer.
+window.nobloatSaveFailed = function (reason) {
+  const detail = String(reason?.message ?? reason ?? '').trim();
+  window.__TAURI__.dialog
+    .message(
+      `Couldn't save the PDF. Nothing was written, and your changes are still open in this tab.${
+        detail ? `\n\n${detail}` : ''
+      }`,
+      { title: 'No Bloat PDF', kind: 'error' }
+    )
+    .catch(() => {});
+};
+
+// Pure XFA forms (Adobe LiveCycle Designer) lay their pages out from the form
+// template when they open; the file stores only a placeholder page. pdf.js
+// can fill and save them, but its page rebuilder (page editing, Sanitize,
+// Combine) cannot copy pages that do not exist as PDF pages.
+const XFA_REBUILD_TEXT =
+  'This PDF is an XFA form (made with Adobe LiveCycle Designer). Its pages are generated from the form when it opens, so they cannot be rebuilt into a new PDF.';
+
 // ---------------------------------------------------------------------------
 // Combine Files
 //
@@ -801,6 +823,7 @@ async function openPdfForInspection(item) {
       data: item.bytes.slice(),
       worker: combineWorker(),
       password: item.password,
+      enableXfa: true, // only so isPureXfa can be checked below
     });
     try {
       await task.promise;
@@ -822,6 +845,12 @@ async function inspectItem(item) {
     const task = await openPdfForInspection(item);
     const doc = await task.promise;
     try {
+      // The combiner would copy only the form's placeholder page ("Please
+      // wait... If this message is not eventually replaced..."), so refuse
+      // it here rather than write a PDF that has lost the form.
+      if (doc.isPureXfa) {
+        throw new Error('it is an XFA form, whose pages are generated when it opens and cannot be copied');
+      }
       item.pages = doc.numPages;
       const page = await doc.getPage(1);
       const base = page.getViewport({ scale: 1 });
@@ -1447,7 +1476,8 @@ function openPageMenu(x, y) {
 function initPageContextMenu() {
   document.addEventListener('contextmenu', (ev) => {
     const thumb = ev.target.closest?.('#thumbnailsView .thumbnail');
-    if (!thumb) {
+    // XFA forms get no page editing (see XFA_REBUILD_TEXT), so no page menu.
+    if (!thumb || window.PDFViewerApplication?.pdfDocument?.isPureXfa) {
       closePageMenu();
       return;
     }
@@ -1593,6 +1623,15 @@ async function sanitizeActiveTab() {
   const tab = activeTab();
   const doc = window.PDFViewerApplication?.pdfDocument;
   if (!tab || !doc) return;
+  if (doc.isPureXfa) {
+    window.__TAURI__.dialog
+      .message(`Sanitize Document can't be used on this file.\n\n${XFA_REBUILD_TEXT}`, {
+        title: 'No Bloat PDF',
+        kind: 'info',
+      })
+      .catch(() => {});
+    return;
+  }
   try {
     const data = await doc.extractPages([{ document: null }], { sanitize: true });
     if (!data) throw new Error('The document could not be rewritten.');
@@ -2084,6 +2123,9 @@ window.addEventListener('DOMContentLoaded', () => {
       const tab = activeTab();
       const doc = app.pdfDocument;
       if (!tab || !doc) return;
+      // Hides the Pages panel's Select pages / Manage bar on XFA forms, which
+      // get no page editing (the viewer gates the rest).
+      document.body.classList.toggle('nb-no-page-editing', !!doc.isPureXfa);
       // Same tab, different bytes: the file changed on disk, usually because
       // the user saved their bookmark edits into it. Those edits are now
       // either baked into the file or stale against its new outline, so

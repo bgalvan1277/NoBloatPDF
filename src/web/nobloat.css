@@ -122,6 +122,13 @@
   z-index: 20001;
 }
 
+/* XFA forms get no page editing (their pages cannot be rebuilt), so the
+   Pages panel's Select pages / Manage bar has nothing to offer. pdf.js sets
+   the bar's `hidden` attribute itself, hence !important. */
+.nb-no-page-editing #viewsManagerStatus {
+  display: none !important;
+}
+
 .nb-menu-item {
   display: flex;
   align-items: center;

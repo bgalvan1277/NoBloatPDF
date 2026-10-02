@@ -10496,6 +10496,9 @@ class PDFThumbnailViewer {
       eventBus.on("editingaction", ({
         name
       }) => {
+        if (!this.#canEditPages) {
+          return;
+        }
         switch (name) {
           case "copyPage":
             this.#copyPages();
@@ -10748,7 +10751,7 @@ class PDFThumbnailViewer {
           maxCanvasPixels: this.maxCanvasPixels,
           maxCanvasDim: this.maxCanvasDim,
           pageColors: this.pageColors,
-          enableSplitMerge: this.#enableSplitMerge
+          enableSplitMerge: this.#canEditPages
         });
         this._thumbnails.push(thumbnail);
       }
@@ -10818,6 +10821,14 @@ class PDFThumbnailViewer {
       return true;
     }
     return false;
+  }
+  // nobloat: page edits are saved by rebuilding the file through
+  // extractPages, which cannot rebuild a pure XFA form (its pages are laid
+  // out from the form template when it opens, not stored as PDF pages). Turn
+  // page editing off for those documents so a form can never be put into a
+  // state it cannot be saved from.
+  get #canEditPages() {
+    return this.#enableSplitMerge && !this.pdfDocument?.isPureXfa;
   }
   hasStructuralChanges() {
     return this.#pagesMapper?.hasBeenAltered() || false;
@@ -11470,20 +11481,20 @@ class PDFThumbnailViewer {
           }
           break;
         case "c":
-          if (this.#enableSplitMerge && (e.ctrlKey || e.metaKey) && this.#selectedPages?.size) {
+          if (this.#canEditPages && (e.ctrlKey || e.metaKey) && this.#selectedPages?.size) {
             this.#copyPages();
             stopEvent(e);
           }
           break;
         case "x":
-          if (this.#enableSplitMerge && (e.ctrlKey || e.metaKey) && this.#selectedPages?.size) {
+          if (this.#canEditPages && (e.ctrlKey || e.metaKey) && this.#selectedPages?.size) {
             this.#cutPages();
             stopEvent(e);
           }
           break;
         case "Delete":
         case "Backspace":
-          if (this.#enableSplitMerge && !this.#isInPasteMode && this.#selectedPages?.size) {
+          if (this.#canEditPages && !this.#isInPasteMode && this.#selectedPages?.size) {
             this.#deletePages();
             stopEvent(e);
           }
@@ -11528,7 +11539,7 @@ class PDFThumbnailViewer {
         clientY: clickY,
         pointerId: dragPointerId
       } = e;
-      if (e.button !== 0 || this.#isInPasteMode || this._thumbnails.length === 1 || !isNaN(this.#lastDraggedOverIndex) || !draggedImage.classList.contains("thumbnailImageContainer")) {
+      if (e.button !== 0 || !this.#canEditPages || this.#isInPasteMode || this._thumbnails.length === 1 || !isNaN(this.#lastDraggedOverIndex) || !draggedImage.classList.contains("thumbnailImageContainer")) {
         return;
       }
       const thumbnail = draggedImage.parentElement;
@@ -18955,7 +18966,11 @@ const PDFViewerApplication = {
     if (!this.pdfLoadingTask) {
       return;
     }
-    if (this._hasChanges() && this._annotationStorageModified) {
+    // nobloat: no save-on-close. The host asks before edits are dropped
+    // (confirmDiscard in nobloat.js), so by the time a document closes the
+    // user has already chosen to discard; saving here would pop a Save
+    // dialog right after they said Discard.
+    if (!window.nobloatSaveFile && this._hasChanges() && this._annotationStorageModified) {
       try {
         await this.downloadOrSave();
       } catch {}
@@ -19053,6 +19068,9 @@ const PDFViewerApplication = {
     } catch {}
     if (window.nobloatSaveFile && data) {
       await window.nobloatSaveFile(data, this._docFilename);
+    } else if (window.nobloatSaveFailed) {
+      // nobloat: there is no browser download to fall back to.
+      window.nobloatSaveFailed("The document's data could not be read.");
     } else {
       this.downloadManager.download(data, this._downloadUrl, this._docFilename);
     }
@@ -19081,7 +19099,15 @@ const PDFViewerApplication = {
       }
     } catch (reason) {
       console.error(`Error when saving the document:`, reason);
-      await this.download();
+      // nobloat: stock pdf.js falls back to downloading the original bytes.
+      // Here that writes the file WITHOUT the edits, toasts "Saved", and
+      // reloads the tab, which throws the edits away. Report the failure and
+      // leave the edits in the viewer instead.
+      if (window.nobloatSaveFailed) {
+        window.nobloatSaveFailed(reason);
+      } else {
+        await this.download();
+      }
     } finally {
       await this.pdfScriptingManager.dispatchDidSave();
       this._saveInProgress = false;
@@ -19105,30 +19131,41 @@ const PDFViewerApplication = {
       classList
     } = this.appConfig.appContainer;
     classList.add("wait");
-    if (this.pdfThumbnailViewer?.hasStructuralChanges()) {
-      // Page edits are saved by rebuilding the file through extractPages,
-      // which takes no outline argument: pending bookmark edits cannot ride
-      // along on this path and would be dropped without a word. Let the host
-      // warn (and offer to back out) before that happens.
-      if (window.nobloatConfirmPageSave && !(await window.nobloatConfirmPageSave())) {
-        classList.remove("wait");
-        return;
-      }
-      this.externalServices.reportTelemetry({
-        type: "pageOrganization",
-        data: {
-          action: "save"
+    // nobloat: try/catch/finally so a failure is reported instead of becoming
+    // an unhandled rejection that leaves the busy cursor up.
+    try {
+      if (this.pdfThumbnailViewer?.hasStructuralChanges()) {
+        // Page edits are saved by rebuilding the file through extractPages,
+        // which takes no outline argument: pending bookmark edits cannot ride
+        // along on this path and would be dropped without a word. Let the host
+        // warn (and offer to back out) before that happens.
+        if (window.nobloatConfirmPageSave && !(await window.nobloatConfirmPageSave())) {
+          return;
         }
-      });
-      await this.onSavePages({
-        data: this.pdfThumbnailViewer.getStructuralChanges()
-      });
-    } else {
-      await (this.pdfDocument?.annotationStorage.size > 0 || window.nobloatBookmarks?.saveOptions() ? this.save() : this.download());
+        this.externalServices.reportTelemetry({
+          type: "pageOrganization",
+          data: {
+            action: "save"
+          }
+        });
+        await this.onSavePages({
+          data: this.pdfThumbnailViewer.getStructuralChanges()
+        });
+      } else {
+        await (this.pdfDocument?.annotationStorage.size > 0 || window.nobloatBookmarks?.saveOptions() ? this.save() : this.download());
+      }
+      delete this._mergedDocumentNeedsSaving;
+      this.setTitle();
+    } catch (reason) {
+      console.error("Error when saving the document:", reason);
+      if (window.nobloatSaveFailed) {
+        window.nobloatSaveFailed(reason);
+      } else {
+        throw reason;
+      }
+    } finally {
+      classList.remove("wait");
     }
-    delete this._mergedDocumentNeedsSaving;
-    this.setTitle();
-    classList.remove("wait");
   },
   async _documentError(key, moreInfo = null) {
     this._unblockDocumentLoadEvent();
@@ -19843,6 +19880,9 @@ const PDFViewerApplication = {
     const modifiedPdfBytes = await this.pdfDocument.extractPages(extractParams);
     if (!modifiedPdfBytes) {
       console.error("Something wrong happened when saving the edited PDF.\nPlease file a bug.");
+      // nobloat: never fail silently. Nothing was written and the page
+      // edits are still in the viewer.
+      window.nobloatSaveFailed?.("The edited pages could not be rebuilt into a PDF.");
       return;
     }
     if (window.nobloatSaveFile) {
